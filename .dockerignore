@@ -1,0 +1,6 @@
+recordings/
+.grain-session/
+.env
+*.mp4
+*.mp3
+graindl

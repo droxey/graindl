@@ -1,0 +1,14 @@
+services:
+  graindl:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-none}
+    volumes:
+      - ./recordings:/data
+      - ./.env:/home/exporter/.env:ro
+    environment:
+      - GRAIN_API_TOKEN
+    # API-only mode by default. Override command for browser mode:
+    # command: ["--output", "/data", "--headless"]
