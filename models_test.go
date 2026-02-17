@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -407,6 +408,25 @@ func TestParseHighlightsClipsWrapper(t *testing.T) {
 	}
 }
 
+func TestParseHighlightsWrapperWithTitle(t *testing.T) {
+	// Regression: a wrapper with a top-level "title" must not be
+	// misidentified as a single highlight object.
+	input := map[string]any{
+		"title": "Q4 Highlights Collection",
+		"highlights": []any{
+			map[string]any{"id": "h1", "text": "Real highlight 1"},
+			map[string]any{"id": "h2", "text": "Real highlight 2"},
+		},
+	}
+	highlights := parseHighlights(input)
+	if len(highlights) != 2 {
+		t.Fatalf("expected 2 highlights from titled wrapper, got %d", len(highlights))
+	}
+	if highlights[0].ID != "h1" {
+		t.Errorf("highlights[0].ID = %q, want h1", highlights[0].ID)
+	}
+}
+
 func TestParseHighlightsNil(t *testing.T) {
 	if got := parseHighlights(nil); got != nil {
 		t.Errorf("expected nil for nil input, got %v", got)
@@ -522,6 +542,37 @@ func TestNormalizeHighlightDurationInference(t *testing.T) {
 	clip2 := normalizeHighlight(h2, 0)
 	if clip2.EndSec != 70.0 {
 		t.Errorf("EndSec = %f, want 70.0 (inferred)", clip2.EndSec)
+	}
+}
+
+func TestNormalizeHighlightZeroTimestamp(t *testing.T) {
+	// Regression: a highlight starting at second 0 must preserve
+	// start_sec=0 in the JSON output (not omit it).
+	h := Highlight{StartTime: 0.0, EndTime: 10.0}
+	clip := normalizeHighlight(h, 0)
+	if clip.StartSec != 0.0 {
+		t.Errorf("StartSec = %f, want 0.0", clip.StartSec)
+	}
+	if clip.DurationSec != 10.0 {
+		t.Errorf("DurationSec = %f, want 10.0", clip.DurationSec)
+	}
+
+	// Verify 0 values survive JSON round-trip.
+	data, err := json.Marshal(clip)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var rt HighlightClip
+	if err := json.Unmarshal(data, &rt); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if rt.StartSec != 0.0 {
+		t.Errorf("round-trip StartSec = %f, want 0.0 (must not be omitted)", rt.StartSec)
+	}
+
+	// Verify "start_sec" key is present in raw JSON even when 0.
+	if !strings.Contains(string(data), `"start_sec"`) {
+		t.Errorf("start_sec missing from JSON when value is 0: %s", data)
 	}
 }
 

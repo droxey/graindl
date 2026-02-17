@@ -178,16 +178,16 @@ type Highlight struct {
 
 // HighlightClip is the normalized output format for an individual highlight.
 type HighlightClip struct {
-	ID        string  `json:"id,omitempty"`
-	Title     string  `json:"title,omitempty"`
-	Text      string  `json:"text,omitempty"`
-	Speaker   string  `json:"speaker,omitempty"`
-	StartSec  float64 `json:"start_sec,omitempty"`
-	EndSec    float64 `json:"end_sec,omitempty"`
-	DurationSec float64 `json:"duration_sec,omitempty"`
-	URL       string  `json:"url,omitempty"`
-	Tags      any     `json:"tags,omitempty"`
-	CreatedAt string  `json:"created_at,omitempty"`
+	ID          string  `json:"id,omitempty"`
+	Title       string  `json:"title,omitempty"`
+	Text        string  `json:"text,omitempty"`
+	Speaker     string  `json:"speaker,omitempty"`
+	StartSec    float64 `json:"start_sec"`
+	EndSec      float64 `json:"end_sec"`
+	DurationSec float64 `json:"duration_sec"`
+	URL         string  `json:"url,omitempty"`
+	Tags        any     `json:"tags,omitempty"`
+	CreatedAt   string  `json:"created_at,omitempty"`
 }
 
 // parseHighlights extracts typed highlights from the raw API value.
@@ -208,13 +208,9 @@ func parseHighlights(v any) []Highlight {
 		return arr
 	}
 
-	// Try single object.
-	var single Highlight
-	if json.Unmarshal(data, &single) == nil && (single.ID != "" || single.Text != "" || single.Title != "" || single.Content != "") {
-		return []Highlight{single}
-	}
-
-	// Try wrapper object with known list keys.
+	// Try wrapper object with known list keys (before single-object,
+	// because a wrapper like {"title":"Q4","highlights":[...]} would
+	// falsely match the single-object check on "title").
 	var wrapper struct {
 		Highlights []Highlight `json:"highlights"`
 		Clips      []Highlight `json:"clips"`
@@ -226,6 +222,12 @@ func parseHighlights(v any) []Highlight {
 		}
 	}
 
+	// Try single object (after wrapper to avoid misidentification).
+	var single Highlight
+	if json.Unmarshal(data, &single) == nil && (single.ID != "" || single.Text != "" || single.Title != "" || single.Content != "") {
+		return []Highlight{single}
+	}
+
 	return nil
 }
 
@@ -235,7 +237,7 @@ func normalizeHighlight(h Highlight, index int) HighlightClip {
 	text := coalesce(h.Text, h.Content, h.Transcript)
 	title := coalesce(h.Title, h.Name)
 	speaker := coalesce(h.Speaker, h.SpeakerName)
-	url := coalesce(h.URL, h.ShareURL)
+	hlURL := coalesce(h.URL, h.ShareURL)
 	tags := firstNonNil(h.Tags, h.Labels)
 
 	startSec := toFloat64(firstNonNil(h.StartTime, h.Start, h.Timestamp))
@@ -258,7 +260,7 @@ func normalizeHighlight(h Highlight, index int) HighlightClip {
 		StartSec:    startSec,
 		EndSec:      endSec,
 		DurationSec: durSec,
-		URL:         url,
+		URL:         hlURL,
 		Tags:        tags,
 		CreatedAt:   h.CreatedAt,
 	}
