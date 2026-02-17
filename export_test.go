@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -600,5 +601,290 @@ func TestRunAPIDriven(t *testing.T) {
 	}
 	if m.OK != 2 {
 		t.Errorf("manifest.OK = %d, want 2", m.OK)
+	}
+}
+
+// ── Dry-run tests ────────────────────────────────────────────────────────────
+
+func TestDryRunAPIDriven(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/me":
+			json.NewEncoder(w).Encode(GrainUser{Name: "Test"})
+		case r.URL.Path == "/recordings":
+			w.Write([]byte(`{"recordings":[
+				{"id":"m1","title":"Meeting 1","created_at":"2025-03-01"},
+				{"id":"m2","title":"Meeting 2","created_at":"2025-03-02"},
+				{"id":"m3","title":"Meeting 3","created_at":"2025-03-03"}
+			]}`))
+		default:
+			json.NewEncoder(w).Encode(GrainRecording{ID: "m1"})
+		}
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		DryRun:      true,
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run --dry-run: %v", err)
+	}
+
+	// No manifest should be written in dry-run mode.
+	manifestPath := filepath.Join(dir, "_export-manifest.json")
+	if fileExists(manifestPath) {
+		t.Error("manifest should NOT exist in dry-run mode")
+	}
+
+	// No date directories or metadata files should be created.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.IsDir() {
+			t.Errorf("unexpected directory in output: %s", e.Name())
+		}
+	}
+}
+
+func TestDryRunNoFiles(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/me":
+			json.NewEncoder(w).Encode(GrainUser{Name: "Test"})
+		case r.URL.Path == "/recordings":
+			w.Write([]byte(`{"recordings":[{"id":"x1","title":"X","created_at":"2025-01-01"}]}`))
+		default:
+			json.NewEncoder(w).Encode(GrainRecording{ID: "x1", Transcript: "hello"})
+		}
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		DryRun:      true,
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// No metadata, transcript, or video files should exist.
+	matches, _ := filepath.Glob(filepath.Join(dir, "**", "*.json"))
+	if len(matches) > 0 {
+		t.Errorf("expected no JSON files, got %v", matches)
+	}
+	matches, _ = filepath.Glob(filepath.Join(dir, "**", "*.txt"))
+	if len(matches) > 0 {
+		t.Errorf("expected no transcript files, got %v", matches)
+	}
+}
+
+func TestDryRunWithMaxMeetings(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/me":
+			json.NewEncoder(w).Encode(GrainUser{Name: "Test"})
+		case r.URL.Path == "/recordings":
+			w.Write([]byte(`{"recordings":[
+				{"id":"m1","title":"Meeting 1","created_at":"2025-03-01"},
+				{"id":"m2","title":"Meeting 2","created_at":"2025-03-02"},
+				{"id":"m3","title":"Meeting 3","created_at":"2025-03-03"}
+			]}`))
+		default:
+			json.NewEncoder(w).Encode(GrainRecording{ID: "m1"})
+		}
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		DryRun:      true,
+		MaxMeetings: 2,
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	// Capture stdout to verify the listing is limited.
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	if err := e.Run(context.Background()); err != nil {
+		w.Close()
+		os.Stdout = old
+		t.Fatalf("Run: %v", err)
+	}
+	w.Close()
+	os.Stdout = old
+
+	out, _ := io.ReadAll(r)
+	output := string(out)
+
+	// Should contain m1 and m2 but not m3 (capped at --max 2).
+	if !strings.Contains(output, "m1") {
+		t.Errorf("expected m1 in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "m2") {
+		t.Errorf("expected m2 in output, got:\n%s", output)
+	}
+	if strings.Contains(output, "m3") {
+		t.Errorf("m3 should not appear (--max 2), got:\n%s", output)
+	}
+}
+
+func TestDryRunSingleMeeting(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(GrainRecording{
+			ID: "single-dry", Title: "Dry Single", CreatedAt: "2025-07-04T12:00:00Z",
+		})
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		MeetingID:   "single-dry",
+		DryRun:      true,
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	// Capture stdout.
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	if err := e.Run(context.Background()); err != nil {
+		w.Close()
+		os.Stdout = old
+		t.Fatalf("Run --id --dry-run: %v", err)
+	}
+	w.Close()
+	os.Stdout = old
+
+	out, _ := io.ReadAll(r)
+	output := string(out)
+
+	if !strings.Contains(output, "single-dry") {
+		t.Errorf("expected meeting ID in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Dry Single") {
+		t.Errorf("expected meeting title in output, got:\n%s", output)
+	}
+
+	// No files should be written.
+	manifestPath := filepath.Join(dir, "_export-manifest.json")
+	if fileExists(manifestPath) {
+		t.Error("manifest should NOT exist in dry-run mode")
+	}
+}
+
+func TestDryRunSingleMeetingInvalidID(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{
+		OutputDir:   dir,
+		MeetingID:   "../etc/passwd",
+		DryRun:      true,
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	defer e.Close()
+
+	err = e.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected error for invalid meeting ID")
+	}
+	if !strings.Contains(err.Error(), "invalid meeting ID") {
+		t.Errorf("error = %q, want 'invalid meeting ID'", err.Error())
+	}
+}
+
+func TestDryRunPrintDryRunOutput(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{OutputDir: dir, MinDelaySec: 0, MaxDelaySec: 0.01}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+
+	meetings := []MeetingRef{
+		{ID: "aaa", Title: "Alpha Meeting", Date: "2025-01-10T09:00:00Z"},
+		{ID: "bbb", Title: "", Date: "2025-02-20"},
+		{ID: "ccc", Title: "Gamma", Date: ""},
+	}
+
+	// Capture stdout.
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	e.printDryRun(meetings)
+
+	w.Close()
+	os.Stdout = old
+
+	out, _ := io.ReadAll(r)
+	output := string(out)
+
+	// Header row.
+	if !strings.Contains(output, "ID") || !strings.Contains(output, "TITLE") {
+		t.Errorf("missing table header, got:\n%s", output)
+	}
+	// Row data.
+	if !strings.Contains(output, "aaa") || !strings.Contains(output, "Alpha Meeting") {
+		t.Errorf("missing meeting aaa, got:\n%s", output)
+	}
+	// Untitled fallback.
+	if !strings.Contains(output, "(untitled)") {
+		t.Errorf("expected (untitled) for meeting with no title, got:\n%s", output)
+	}
+	// Unknown date fallback.
+	if !strings.Contains(output, "unknown-date") {
+		t.Errorf("expected unknown-date for meeting with no date, got:\n%s", output)
 	}
 }

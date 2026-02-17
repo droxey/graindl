@@ -94,6 +94,7 @@ func main() {
 	flag.StringVar(&cfg.SessionDir, "session-dir", coalesce(envGet(dotenv, "GRAIN_SESSION_DIR"), "./.grain-session"), "Browser session dir")
 	flag.IntVar(&cfg.MaxMeetings, "max", envInt(dotenv, "GRAIN_MAX_MEETINGS", 0), "Max meetings (0=all)")
 	flag.StringVar(&cfg.MeetingID, "id", envGet(dotenv, "GRAIN_MEETING_ID"), "Export a single meeting by ID")
+	flag.BoolVar(&cfg.DryRun, "dry-run", envBool(dotenv, "GRAIN_DRY_RUN"), "List meetings that would be exported without exporting")
 	flag.BoolVar(&cfg.SkipVideo, "skip-video", envBool(dotenv, "GRAIN_SKIP_VIDEO"), "Skip video downloads")
 	flag.BoolVar(&cfg.Overwrite, "overwrite", envBool(dotenv, "GRAIN_OVERWRITE"), "Overwrite existing")
 	flag.BoolVar(&cfg.Headless, "headless", envBool(dotenv, "GRAIN_HEADLESS"), "Headless browser")
