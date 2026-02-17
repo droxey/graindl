@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
-	"text/tabwriter"
 	"os"
+	"path/filepath"
+	"strings"
+	"text/tabwriter"
 	"time"
 )
 
@@ -324,7 +325,9 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 
 	e.writeMetadata(rec, ref, metaPath, r)
 	e.writeTranscripts(ctx, rec, ref.ID, base, r)
-	if !e.cfg.SkipVideo {
+	if e.cfg.AudioOnly {
+		e.writeAudio(ctx, ref, base+".m4a", r)
+	} else if !e.cfg.SkipVideo {
 		e.writeVideo(ctx, ref, videoPath, r)
 	}
 	if r.Status == "" {
@@ -423,6 +426,63 @@ func (e *Exporter) writeVideo(ctx context.Context, ref MeetingRef, videoPath str
 	default:
 		slog.Warn("Video download failed", "id", ref.ID)
 	}
+}
+
+func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, audioPath string, r *ExportResult) {
+	b, err := e.lazyBrowser()
+	if err != nil {
+		slog.Error("Browser init failed", "error", err)
+		return
+	}
+
+	pageURL := coalesce(ref.URL, meetingURL(ref.ID))
+	slog.Debug("Finding video source for audio extraction", "id", ref.ID)
+
+	// Try to find a video URL without downloading — lets ffmpeg stream
+	// just the audio track, saving bandwidth and disk.
+	videoURL := b.FindVideoSource(ctx, pageURL)
+	if videoURL != "" {
+		if strings.Contains(videoURL, ".m3u8") {
+			// HLS: ffmpeg can extract audio directly from the manifest.
+			if err := extractAudio(ctx, videoURL, audioPath); err == nil {
+				r.AudioPath = e.relPath(audioPath)
+				r.AudioMethod = "ffmpeg-hls"
+				slog.Info("Audio extracted from HLS stream", "id", ref.ID)
+				return
+			}
+			slog.Warn("HLS audio extraction failed, saving URL", "id", ref.ID)
+			p := strings.TrimSuffix(audioPath, ".m4a") + ".m3u8.url"
+			_ = writeFile(p, []byte(videoURL))
+			r.AudioPath = e.relPath(p)
+			r.AudioMethod = "hls"
+			r.Status = "hls_pending"
+			return
+		}
+
+		// Direct URL: ffmpeg extracts audio from the remote file.
+		if err := extractAudio(ctx, videoURL, audioPath); err == nil {
+			r.AudioPath = e.relPath(audioPath)
+			r.AudioMethod = "ffmpeg-direct"
+			slog.Info("Audio extracted from direct URL", "id", ref.ID)
+			return
+		}
+		slog.Warn("Direct URL audio extraction failed, trying button download", "id", ref.ID)
+	}
+
+	// Fallback: download the full video via button, extract audio, then delete.
+	tmpVideo := audioPath + ".tmp.mp4"
+	if p := b.tryDownloadBtn(ctx, tmpVideo); p != "" {
+		if err := extractAudio(ctx, p, audioPath); err == nil {
+			_ = os.Remove(tmpVideo)
+			r.AudioPath = e.relPath(audioPath)
+			r.AudioMethod = "ffmpeg-local"
+			slog.Info("Audio extracted from downloaded video", "id", ref.ID)
+			return
+		}
+		_ = os.Remove(tmpVideo)
+	}
+
+	slog.Warn("Audio extraction failed", "id", ref.ID)
 }
 
 func (e *Exporter) relPath(abs string) string {

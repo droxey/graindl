@@ -39,6 +39,7 @@ graindl [flags]
 |`--max`          |`GRAIN_MAX_MEETINGS`|`0` (all)         |Max meetings to export                             |
 |`--search`       |`GRAIN_SEARCH`      |                  |Search query to filter meetings                    |
 |`--skip-video`   |`GRAIN_SKIP_VIDEO`  |`false`           |Skip video downloads                               |
+|`--audio-only`   |`GRAIN_AUDIO_ONLY`  |`false`           |Export audio track only (requires ffmpeg)           |
 |`--overwrite`    |`GRAIN_OVERWRITE`   |`false`           |Overwrite existing exports                         |
 |`--headless`     |`GRAIN_HEADLESS`    |`false`           |Headless browser mode                              |
 |`--clean-session`|                    |`false`           |Wipe browser session before run                    |
@@ -58,6 +59,26 @@ Use `--search` to export only meetings matching a query:
 ```
 
 This navigates Grain's search UI, extracts matching meeting IDs, then exports only those meetings. The search handles infinite scroll to capture all results. Combine with `--max` to limit output.
+
+### Audio-Only Export
+
+Use `--audio-only` to extract just the audio track from each meeting, saving bandwidth and disk space. This is useful for re-transcription with Whisper or similar tools.
+
+```bash
+./graindl --token-file .grain-token --audio-only
+```
+
+Requires [ffmpeg](https://ffmpeg.org/) on PATH. The tool first tries to stream audio directly from the video source URL (avoiding a full video download), and falls back to downloading the video then extracting audio locally. Output format is `.m4a` (AAC). The intermediate video file is automatically cleaned up.
+
+Combine with other flags:
+
+```bash
+# Audio-only for a single meeting
+./graindl --token-file .grain-token --audio-only --id <meeting-id>
+
+# Audio-only for search results
+./graindl --token-file .grain-token --audio-only --search "Q4 planning"
+```
 
 ## Development
 
