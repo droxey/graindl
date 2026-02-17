@@ -161,6 +161,10 @@ func main() {
 			slog.Error("--watch cannot be used with --dry-run")
 			os.Exit(1)
 		}
+		if cfg.Overwrite {
+			slog.Error("--watch cannot be used with --overwrite (would re-export every meeting every cycle)")
+			os.Exit(1)
+		}
 	}
 
 	slog.Info(fmt.Sprintf("graindl %s", version))
@@ -175,7 +179,7 @@ func main() {
 		slog.Info("Video: skipped")
 	}
 	if cfg.Watch {
-		slog.Info(fmt.Sprintf("Watch: polling every %s", cfg.WatchInterval))
+		slog.Info(fmt.Sprintf("Watch: polling every %s (Ctrl-C to stop)", cfg.WatchInterval))
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

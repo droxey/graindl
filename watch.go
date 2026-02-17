@@ -13,7 +13,6 @@ import (
 // automatically skipped.
 func (e *Exporter) RunWatch(ctx context.Context) error {
 	interval := e.cfg.WatchInterval
-	slog.Info(fmt.Sprintf("Watch mode: polling every %s (Ctrl-C to stop)", interval))
 
 	var totalOK, totalSkipped, totalErrors int
 	cycle := 0
@@ -43,10 +42,12 @@ func (e *Exporter) RunWatch(ctx context.Context) error {
 		slog.Info(fmt.Sprintf("── cycle %d done (exported=%d skipped=%d errors=%d) — next poll in %s ──",
 			cycle, e.manifest.OK, e.manifest.Skipped, e.manifest.Errors, interval))
 
+		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			// Shutdown requested while waiting.
-		case <-time.After(interval):
+		case <-timer.C:
 			continue
 		}
 		break
