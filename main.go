@@ -103,7 +103,9 @@ func main() {
 	flag.BoolVar(&cfg.Verbose, "verbose", envBool(dotenv, "GRAIN_VERBOSE"), "Verbose output")
 	flag.Float64Var(&cfg.MinDelaySec, "min-delay", envFloat(dotenv, "GRAIN_MIN_DELAY", 2.0), "Min delay (seconds)")
 	flag.Float64Var(&cfg.MaxDelaySec, "max-delay", envFloat(dotenv, "GRAIN_MAX_DELAY", 6.0), "Max delay (seconds)")
+	flag.IntVar(&cfg.Parallel, "parallel", envInt(dotenv, "GRAIN_PARALLEL", 1), "Number of meetings to export concurrently")
 	flag.StringVar(&cfg.SearchQuery, "search", envGet(dotenv, "GRAIN_SEARCH"), "Search query to filter meetings")
+	flag.StringVar(&cfg.OutputFormat, "output-format", envGet(dotenv, "GRAIN_OUTPUT_FORMAT"), "Export format: obsidian, notion (adds frontmatter markdown)")
 	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
 	flag.Parse()
 
@@ -131,6 +133,9 @@ func main() {
 		slog.Warn("Token passed via --token flag (visible in process list). Use --token-file or GRAIN_API_TOKEN env var instead.")
 	}
 
+	if cfg.Parallel < 1 {
+		cfg.Parallel = 1
+	}
 	if cfg.MinDelaySec < 0 {
 		cfg.MinDelaySec = 0
 	}
@@ -138,9 +143,20 @@ func main() {
 		cfg.MaxDelaySec = cfg.MinDelaySec + 1
 	}
 
+	if cfg.OutputFormat != "" {
+		cfg.OutputFormat = strings.ToLower(cfg.OutputFormat)
+		if cfg.OutputFormat != "obsidian" && cfg.OutputFormat != "notion" {
+			slog.Error("Invalid --output-format. Must be 'obsidian' or 'notion'.")
+			os.Exit(1)
+		}
+	}
+
 	slog.Info(fmt.Sprintf("graindl %s", version))
 	slog.Info(fmt.Sprintf("Output: %s", absPath(cfg.OutputDir)))
 	slog.Info(fmt.Sprintf("Throttle: %.1f–%.1fs random delay", cfg.MinDelaySec, cfg.MaxDelaySec))
+	if cfg.Parallel > 1 {
+		slog.Info(fmt.Sprintf("Parallel: %d workers", cfg.Parallel))
+	}
 	if cfg.Token != "" {
 		slog.Info(fmt.Sprintf("API: token (%d chars)", len(cfg.Token)))
 	} else {
@@ -154,6 +170,9 @@ func main() {
 		slog.Info("Audio: extracting audio only (ffmpeg)")
 	} else if cfg.SkipVideo {
 		slog.Info("Video: skipped")
+	}
+	if cfg.OutputFormat != "" {
+		slog.Info(fmt.Sprintf("Format: %s", cfg.OutputFormat))
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
