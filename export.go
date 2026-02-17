@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"text/tabwriter"
+	"os"
 	"time"
 )
 
@@ -81,6 +83,12 @@ func (e *Exporter) Run(ctx context.Context) error {
 		meetings = meetings[:e.cfg.MaxMeetings]
 	}
 
+	// Dry-run: list what would be exported and exit.
+	if e.cfg.DryRun {
+		e.printDryRun(meetings)
+		return nil
+	}
+
 	slog.Info("Exporting meetings", "count", len(meetings), "output", absPath(e.cfg.OutputDir))
 	e.manifest.Total = len(meetings)
 
@@ -123,6 +131,20 @@ func (e *Exporter) Run(ctx context.Context) error {
 	return nil
 }
 
+// printDryRun lists the meetings that would be exported without doing it.
+func (e *Exporter) printDryRun(meetings []MeetingRef) {
+	slog.Info(fmt.Sprintf("Dry run: %d meeting(s) would be exported", len(meetings)))
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "#\tID\tDATE\tTITLE")
+	for i, m := range meetings {
+		date := dateFromISO(m.Date)
+		title := coalesce(m.Title, "(untitled)")
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", i+1, m.ID, date, title)
+	}
+	w.Flush()
+}
+
 func (e *Exporter) Close() {
 	if e.browser != nil {
 		e.browser.Close()
@@ -152,6 +174,12 @@ func (e *Exporter) runSingle(ctx context.Context) error {
 		} else {
 			slog.Warn("API fetch failed, continuing with ID only", "id", id, "error", err)
 		}
+	}
+
+	// Dry-run: show what would be exported and exit.
+	if e.cfg.DryRun {
+		e.printDryRun([]MeetingRef{ref})
+		return nil
 	}
 
 	e.manifest.Total = 1
