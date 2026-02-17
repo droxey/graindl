@@ -408,8 +408,23 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 		}
 	}
 
-	e.writeMetadata(rec, ref, metaPath, r)
+	var meta *Metadata
+	if rec != nil {
+		meta = buildMetadata(rec, ref.URL)
+	} else {
+		meta = minimalMetadata(ref.ID, ref.Title, ref.URL)
+	}
+
+	e.writeMetadata(meta, metaPath, r)
 	e.writeTranscripts(ctx, rec, ref.ID, base, r)
+	if e.cfg.OutputFormat != "" {
+		// Use the cached transcript text if available to avoid re-reading from disk.
+		var transcriptText string
+		if rec != nil {
+			transcriptText = rec.GetTranscript()
+		}
+		e.writeFormattedMarkdown(meta, transcriptText, base, r)
+	}
 	if !e.cfg.SkipVideo {
 		e.writeVideo(ctx, ref, videoPath, r)
 	}
@@ -419,19 +434,13 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 	return r
 }
 
-func (e *Exporter) writeMetadata(rec *GrainRecording, ref MeetingRef, path string, r *ExportResult) {
-	var meta *Metadata
-	if rec != nil {
-		meta = buildMetadata(rec, ref.URL)
-	} else {
-		meta = minimalMetadata(ref.ID, ref.Title, ref.URL)
-	}
+func (e *Exporter) writeMetadata(meta *Metadata, path string, r *ExportResult) {
 	if err := writeJSON(path, meta); err != nil {
 		slog.Error("Metadata write failed", "error", err)
 		return
 	}
 	r.MetadataPath = e.relPath(path)
-	slog.Debug("Metadata written", "id", ref.ID)
+	slog.Debug("Metadata written", "id", meta.ID)
 }
 
 func (e *Exporter) writeTranscripts(ctx context.Context, rec *GrainRecording, id, base string, r *ExportResult) {
@@ -483,6 +492,19 @@ func (e *Exporter) writeTranscripts(ctx context.Context, rec *GrainRecording, id
 				slog.Debug("Transcript written", "format", "text", "id", id)
 			}
 		}
+	}
+}
+
+func (e *Exporter) writeFormattedMarkdown(meta *Metadata, transcriptText, base string, r *ExportResult) {
+	md := renderFormattedMarkdown(e.cfg.OutputFormat, meta, transcriptText)
+	if md == "" {
+		return
+	}
+
+	p := base + ".md"
+	if writeFile(p, []byte(md)) == nil {
+		r.MarkdownPath = e.relPath(p)
+		slog.Debug("Formatted markdown written", "format", e.cfg.OutputFormat, "id", meta.ID)
 	}
 }
 
