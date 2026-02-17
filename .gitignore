@@ -4,6 +4,7 @@ graindl
 # Runtime data
 recordings/
 .grain-session/
+chromium-profile/
 .env
 *.mp4
 *.mp3
