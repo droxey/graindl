@@ -1,6 +1,5 @@
 <p align="center">
-  <strong>graindl</strong><br/>
-  Export your meetings, transcripts, highlights, and videos from <a href="https://grain.com">Grain</a> &mdash; on your terms.
+  <strong>graindl</strong><br/>Command that export your meetings, transcripts, highlights, and videos from <a href="https://grain.com">Grain</a>!
 </p>
 
 <p align="center">
@@ -31,7 +30,6 @@
 - [Docker](#docker)
 - [Development](#development)
 - [Security](#security)
-- [License](#license)
 
 -----
 
@@ -39,14 +37,15 @@
 
 [Grain](https://grain.com) records, transcribes, and highlights your meetings. It’s great at capturing knowledge in the moment — but that knowledge lives on Grain’s servers, in Grain’s UI, on Grain’s schedule.
 
-**graindl** gives you a local, portable copy of everything: metadata, transcripts, highlights, AI notes, and video files. I wrote it because:
+**graindl** gives you a local, portable copy of everything: metadata, transcripts, highlights, AI notes, and video files. 
 
-- **Your meetings are your data.** If you switch tools, cancel a subscription, or just want offline access, you shouldn’t lose years of institutional knowledge.
+I wrote it because:
+
+- **Your meetings are _your_ data.** If you switch tools, cancel a subscription, or just want offline access, you shouldn’t lose years of institutional knowledge.
 - **Second brains need raw material.** Obsidian and Notion are powerful — but only when the content actually makes it there. graindl bridges the gap with native export formats, complete with YAML frontmatter.
+- **AI content creators** these videos and transcripts cant determine character traits, speech qualities (voice, tone) that instruct models to create content that's authentic.
 - **Automation beats clicking.** Manually downloading dozens (or hundreds) of meetings from a web UI is tedious and error-prone. graindl handles discovery, pagination, rate-limiting, and retries so you don’t have to.
-- **Browser automation was the only way.** Grain doesn’t offer a public bulk-export API. graindl uses headless Chromium (via [Rod](https://github.com/nicedoc/rod)) to navigate the Grain interface the same way you would — just faster and without the carpal tunnel.
-
-Single static binary. One dependency (`go-rod/rod`). No Node.js runtime, no Python virtualenv, no config files to maintain.
+- **Browser automation was the only way.** Grain doesn’t offer a public bulk-export API. graindl uses headless Chromium (via [Rod](https://github.com/nicedoc/rod)) to navigate the Grain interface the same way you would — just faster and without hundreds of open tabs.
 
 ## Who Is This For?
 
