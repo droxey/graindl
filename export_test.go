@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -197,6 +198,351 @@ func TestExportOneOverwrite(t *testing.T) {
 	r := e.exportOne(context.Background(), ref)
 	if r.Status != "ok" {
 		t.Errorf("overwrite status = %q, want ok", r.Status)
+	}
+}
+
+// ── runSingle (--id flag) ────────────────────────────────────────────────────
+
+func TestRunSingleMeeting(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The scraper fetches the recording to enrich the ref, then again for transcripts.
+		json.NewEncoder(w).Encode(GrainRecording{
+			ID: "single-id", Title: "Solo Meeting", CreatedAt: "2025-08-10T09:00:00Z",
+			Transcript:     "This is the transcript",
+			TranscriptText: "This is the transcript",
+		})
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		MeetingID:   "single-id",
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run with --id: %v", err)
+	}
+
+	// Manifest should exist with exactly 1 meeting.
+	manifestPath := filepath.Join(dir, "_export-manifest.json")
+	if !fileExists(manifestPath) {
+		t.Fatal("manifest missing")
+	}
+	raw, _ := os.ReadFile(manifestPath)
+	var m ExportManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if m.Total != 1 {
+		t.Errorf("manifest.Total = %d, want 1", m.Total)
+	}
+	if m.OK != 1 {
+		t.Errorf("manifest.OK = %d, want 1", m.OK)
+	}
+	if len(m.Meetings) != 1 {
+		t.Fatalf("manifest.Meetings length = %d, want 1", len(m.Meetings))
+	}
+	if m.Meetings[0].ID != "single-id" {
+		t.Errorf("meeting ID = %q, want single-id", m.Meetings[0].ID)
+	}
+	if m.Meetings[0].Status != "ok" {
+		t.Errorf("meeting status = %q, want ok", m.Meetings[0].Status)
+	}
+
+	// Metadata file should exist with correct content.
+	metaPath := filepath.Join(dir, m.Meetings[0].MetadataPath)
+	if !fileExists(metaPath) {
+		t.Fatalf("metadata file missing: %s", metaPath)
+	}
+	metaRaw, _ := os.ReadFile(metaPath)
+	var meta Metadata
+	if err := json.Unmarshal(metaRaw, &meta); err != nil {
+		t.Fatalf("metadata unmarshal: %v", err)
+	}
+	if meta.Title != "Solo Meeting" {
+		t.Errorf("meta.Title = %q, want 'Solo Meeting'", meta.Title)
+	}
+
+	// Paths should be relative (SEC-8).
+	if filepath.IsAbs(m.Meetings[0].MetadataPath) {
+		t.Errorf("MetadataPath should be relative, got %q", m.Meetings[0].MetadataPath)
+	}
+}
+
+func TestRunSingleMeetingInvalidID(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{
+		OutputDir:   dir,
+		MeetingID:   "../etc/passwd",
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	defer e.Close()
+
+	err = e.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected error for invalid meeting ID")
+	}
+	if !strings.Contains(err.Error(), "invalid meeting ID") {
+		t.Errorf("error = %q, want 'invalid meeting ID'", err.Error())
+	}
+}
+
+func TestRunSingleMeetingNoToken(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{
+		OutputDir:   dir,
+		MeetingID:   "valid-meeting-id",
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	defer e.Close()
+
+	// Should not error — falls back to minimal metadata with no API.
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run with --id (no token): %v", err)
+	}
+
+	manifestPath := filepath.Join(dir, "_export-manifest.json")
+	raw, _ := os.ReadFile(manifestPath)
+	var m ExportManifest
+	json.Unmarshal(raw, &m)
+	if m.Total != 1 {
+		t.Errorf("manifest.Total = %d, want 1", m.Total)
+	}
+	if m.OK != 1 {
+		t.Errorf("manifest.OK = %d, want 1", m.OK)
+	}
+}
+
+func TestRunSingleMeetingAPIError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		w.Write([]byte("server error"))
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		MeetingID:   "some-meeting-id",
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	// API error should not be fatal — falls back to minimal export.
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run should not fail on API error: %v", err)
+	}
+
+	manifestPath := filepath.Join(dir, "_export-manifest.json")
+	raw, _ := os.ReadFile(manifestPath)
+	var m ExportManifest
+	json.Unmarshal(raw, &m)
+	if m.Total != 1 {
+		t.Errorf("manifest.Total = %d, want 1", m.Total)
+	}
+	// Meeting should still be exported (with minimal metadata).
+	if m.OK != 1 {
+		t.Errorf("manifest.OK = %d, want 1", m.OK)
+	}
+}
+
+func TestRunSingleMeetingSkipsExisting(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(GrainRecording{
+			ID: "existing-id", Title: "Existing", CreatedAt: "2025-05-01",
+		})
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		MeetingID:   "existing-id",
+		SkipVideo:   true,
+		Overwrite:   false,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	// Pre-create the metadata file at the date-based path so it gets skipped.
+	dateDir := filepath.Join(dir, "2025-05-01")
+	os.MkdirAll(dateDir, 0o755)
+	os.WriteFile(filepath.Join(dateDir, "existing-id.json"), []byte("{}"), 0o600)
+
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	manifestPath := filepath.Join(dir, "_export-manifest.json")
+	raw, _ := os.ReadFile(manifestPath)
+	var m ExportManifest
+	json.Unmarshal(raw, &m)
+	if m.Skipped != 1 {
+		t.Errorf("manifest.Skipped = %d, want 1", m.Skipped)
+	}
+}
+
+func TestRunSingleMeetingOverwrite(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(GrainRecording{
+			ID: "ow-single", Title: "Overwrite Single", CreatedAt: "2025-04-01",
+		})
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		MeetingID:   "ow-single",
+		SkipVideo:   true,
+		Overwrite:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	// Pre-create the file.
+	dateDir := filepath.Join(dir, "2025-04-01")
+	os.MkdirAll(dateDir, 0o755)
+	os.WriteFile(filepath.Join(dateDir, "ow-single.json"), []byte(`{"old": true}`), 0o600)
+
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	manifestPath := filepath.Join(dir, "_export-manifest.json")
+	raw, _ := os.ReadFile(manifestPath)
+	var m ExportManifest
+	json.Unmarshal(raw, &m)
+	if m.OK != 1 {
+		t.Errorf("manifest.OK = %d, want 1", m.OK)
+	}
+
+	// Verify file was overwritten with new content.
+	metaRaw, _ := os.ReadFile(filepath.Join(dateDir, "ow-single.json"))
+	var meta Metadata
+	json.Unmarshal(metaRaw, &meta)
+	if meta.Title != "Overwrite Single" {
+		t.Errorf("meta.Title = %q, expected overwritten content", meta.Title)
+	}
+}
+
+func TestRunSingleMeetingCancellation(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Slow server to allow cancellation to happen first.
+		json.NewEncoder(w).Encode(GrainRecording{ID: "cancel-id"})
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		MeetingID:   "cancel-id",
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately.
+
+	// Should not panic or hang.
+	_ = e.Run(ctx)
+}
+
+func TestRunSingleDoesNotCallDiscover(t *testing.T) {
+	apiCalls := make(map[string]int)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCalls[r.URL.Path]++
+		json.NewEncoder(w).Encode(GrainRecording{
+			ID: "direct-id", Title: "Direct", CreatedAt: "2025-09-01",
+		})
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		MeetingID:   "direct-id",
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// --id mode should NOT call /me or /recordings (discovery endpoints).
+	if apiCalls["/me"] > 0 {
+		t.Errorf("/me was called %d times, should be 0 in --id mode", apiCalls["/me"])
+	}
+	if apiCalls["/recordings"] > 0 {
+		t.Errorf("/recordings was called %d times, should be 0 in --id mode", apiCalls["/recordings"])
+	}
+
+	// Should only call /recordings/<id> for the single meeting.
+	recPath := "/recordings/direct-id"
+	if apiCalls[recPath] == 0 {
+		t.Errorf("expected at least one call to %s", recPath)
 	}
 }
 
