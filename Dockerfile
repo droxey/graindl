@@ -28,6 +28,9 @@ RUN apk add --no-cache \
     harfbuzz \
     ca-certificates \
     ttf-freefont \
+    bash \
+    ffmpeg \
+    jq \
     && adduser -D -h /home/exporter exporter
 
 # Rod looks for Chromium here by default on Alpine
@@ -37,6 +40,7 @@ USER exporter
 WORKDIR /home/exporter
 
 COPY --from=builder /graindl /usr/local/bin/graindl
+COPY convert_hls.sh /usr/local/bin/convert_hls.sh
 
 # Default: API-only, headless, skip video, output to /data
 VOLUME ["/data"]
