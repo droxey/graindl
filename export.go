@@ -4,15 +4,18 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
-	"text/tabwriter"
 	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"text/tabwriter"
 	"time"
 )
 
 type Exporter struct {
 	scraper      *Scraper
 	browser      *Browser
+	browserMu    sync.Mutex
 	cfg          *Config
 	throttle     *Throttle
 	manifest     *ExportManifest
@@ -92,6 +95,29 @@ func (e *Exporter) Run(ctx context.Context) error {
 	slog.Info("Exporting meetings", "count", len(meetings), "output", absPath(e.cfg.OutputDir))
 	e.manifest.Total = len(meetings)
 
+	if e.cfg.Parallel > 1 {
+		e.exportParallel(ctx, meetings)
+	} else {
+		e.exportSequential(ctx, meetings)
+	}
+
+	if err := writeJSON(filepath.Join(e.cfg.OutputDir, "_export-manifest.json"), e.manifest); err != nil {
+		slog.Error("Manifest write failed", "error", err)
+	}
+	slog.Info("Done",
+		"ok", e.manifest.OK,
+		"skipped", e.manifest.Skipped,
+		"errors", e.manifest.Errors,
+		"hls_pending", e.manifest.HLSPending,
+	)
+	if e.manifest.HLSPending > 0 {
+		fmt.Println("  Run ./convert_hls.sh to convert HLS streams to MP4")
+	}
+	return nil
+}
+
+// exportSequential exports meetings one at a time (the default).
+func (e *Exporter) exportSequential(ctx context.Context, meetings []MeetingRef) {
 	for i, m := range meetings {
 		if err := ctx.Err(); err != nil {
 			slog.Warn("Cancelled", "completed", i, "total", len(meetings))
@@ -115,20 +141,81 @@ func (e *Exporter) Run(ctx context.Context) error {
 			_ = e.throttle.Wait(ctx)
 		}
 	}
+}
 
-	if err := writeJSON(filepath.Join(e.cfg.OutputDir, "_export-manifest.json"), e.manifest); err != nil {
-		slog.Error("Manifest write failed", "error", err)
+// indexedResult pairs an export result with its original index so the
+// manifest stays ordered even when meetings finish out of order.
+type indexedResult struct {
+	index  int
+	result *ExportResult
+}
+
+// exportParallel exports up to cfg.Parallel meetings concurrently.
+// Each worker independently calls exportOne (which makes its own API calls
+// and writes to per-meeting files). Results are collected via a channel
+// so that manifest updates happen in a single goroutine (no mutex needed).
+func (e *Exporter) exportParallel(ctx context.Context, meetings []MeetingRef) {
+	n := e.cfg.Parallel
+	total := len(meetings)
+
+	// Pre-allocate manifest slots so results can be placed by index.
+	e.manifest.Meetings = make([]*ExportResult, total)
+
+	sem := make(chan struct{}, n)
+	results := make(chan indexedResult, n)
+
+	var wg sync.WaitGroup
+
+	// Producer: dispatch meetings to workers, limited by semaphore.
+	go func() {
+		for i, m := range meetings {
+			if err := ctx.Err(); err != nil {
+				break
+			}
+
+			sem <- struct{}{} // acquire slot (blocks when N workers are active)
+			wg.Add(1)
+
+			go func(idx int, ref MeetingRef) {
+				defer wg.Done()
+				defer func() { <-sem }() // release slot
+
+				slog.Info(fmt.Sprintf("[%d/%d] %s", idx+1, total, coalesce(ref.Title, ref.ID)))
+				r := e.exportOne(ctx, ref)
+				results <- indexedResult{index: idx, result: r}
+			}(i, m)
+		}
+
+		wg.Wait()
+		close(results)
+	}()
+
+	// Consumer: collect results in the main goroutine (single-writer).
+	for ir := range results {
+		e.manifest.Meetings[ir.index] = ir.result
+		switch ir.result.Status {
+		case "ok":
+			e.manifest.OK++
+		case "skipped":
+			e.manifest.Skipped++
+		case "hls_pending":
+			e.manifest.HLSPending++
+			e.manifest.OK++
+		default:
+			e.manifest.Errors++
+		}
 	}
-	slog.Info("Done",
-		"ok", e.manifest.OK,
-		"skipped", e.manifest.Skipped,
-		"errors", e.manifest.Errors,
-		"hls_pending", e.manifest.HLSPending,
-	)
-	if e.manifest.HLSPending > 0 {
-		fmt.Println("  Run ./convert_hls.sh to convert HLS streams to MP4")
+
+	// Compact: remove nil slots left by meetings that were never dispatched
+	// (e.g. context cancelled mid-dispatch). Keeps manifest consistent with
+	// the sequential path which uses append.
+	compacted := make([]*ExportResult, 0, len(e.manifest.Meetings))
+	for _, r := range e.manifest.Meetings {
+		if r != nil {
+			compacted = append(compacted, r)
+		}
 	}
-	return nil
+	e.manifest.Meetings = compacted
 }
 
 // printDryRun lists the meetings that would be exported without doing it.
@@ -322,8 +409,23 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 		}
 	}
 
-	e.writeMetadata(rec, ref, metaPath, r)
+	var meta *Metadata
+	if rec != nil {
+		meta = buildMetadata(rec, ref.URL)
+	} else {
+		meta = minimalMetadata(ref.ID, ref.Title, ref.URL)
+	}
+
+	e.writeMetadata(meta, metaPath, r)
 	e.writeTranscripts(ctx, rec, ref.ID, base, r)
+	if e.cfg.OutputFormat != "" {
+		// Use the cached transcript text if available to avoid re-reading from disk.
+		var transcriptText string
+		if rec != nil {
+			transcriptText = rec.GetTranscript()
+		}
+		e.writeFormattedMarkdown(meta, transcriptText, base, r)
+	}
 	if !e.cfg.SkipVideo {
 		e.writeVideo(ctx, ref, videoPath, r)
 	}
@@ -333,19 +435,13 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 	return r
 }
 
-func (e *Exporter) writeMetadata(rec *GrainRecording, ref MeetingRef, path string, r *ExportResult) {
-	var meta *Metadata
-	if rec != nil {
-		meta = buildMetadata(rec, ref.URL)
-	} else {
-		meta = minimalMetadata(ref.ID, ref.Title, ref.URL)
-	}
+func (e *Exporter) writeMetadata(meta *Metadata, path string, r *ExportResult) {
 	if err := writeJSON(path, meta); err != nil {
 		slog.Error("Metadata write failed", "error", err)
 		return
 	}
 	r.MetadataPath = e.relPath(path)
-	slog.Debug("Metadata written", "id", ref.ID)
+	slog.Debug("Metadata written", "id", meta.ID)
 }
 
 func (e *Exporter) writeTranscripts(ctx context.Context, rec *GrainRecording, id, base string, r *ExportResult) {
@@ -400,6 +496,19 @@ func (e *Exporter) writeTranscripts(ctx context.Context, rec *GrainRecording, id
 	}
 }
 
+func (e *Exporter) writeFormattedMarkdown(meta *Metadata, transcriptText, base string, r *ExportResult) {
+	md := renderFormattedMarkdown(e.cfg.OutputFormat, meta, transcriptText)
+	if md == "" {
+		return
+	}
+
+	p := base + ".md"
+	if writeFile(p, []byte(md)) == nil {
+		r.MarkdownPath = e.relPath(p)
+		slog.Debug("Formatted markdown written", "format", e.cfg.OutputFormat, "id", meta.ID)
+	}
+}
+
 func (e *Exporter) writeVideo(ctx context.Context, ref MeetingRef, videoPath string, r *ExportResult) {
 	b, err := e.lazyBrowser()
 	if err != nil {
@@ -425,6 +534,64 @@ func (e *Exporter) writeVideo(ctx context.Context, ref MeetingRef, videoPath str
 	}
 }
 
+func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, audioPath string, r *ExportResult) {
+	b, err := e.lazyBrowser()
+	if err != nil {
+		slog.Error("Browser init failed", "error", err)
+		return
+	}
+
+	pageURL := coalesce(ref.URL, meetingURL(ref.ID))
+	slog.Debug("Finding video source for audio extraction", "id", ref.ID)
+
+	// Try to find a video URL without downloading — lets ffmpeg stream
+	// just the audio track, saving bandwidth and disk.
+	verbose := e.cfg.Verbose
+	videoURL := b.FindVideoSource(ctx, pageURL)
+	if videoURL != "" {
+		if strings.Contains(videoURL, ".m3u8") {
+			// HLS: ffmpeg can extract audio directly from the manifest.
+			if err := extractAudio(ctx, videoURL, audioPath, verbose); err == nil {
+				r.AudioPath = e.relPath(audioPath)
+				r.AudioMethod = "ffmpeg-hls"
+				slog.Info("Audio extracted from HLS stream", "id", ref.ID)
+				return
+			}
+			slog.Warn("HLS audio extraction failed, saving URL", "id", ref.ID)
+			p := strings.TrimSuffix(audioPath, ".m4a") + ".m3u8.url"
+			_ = writeFile(p, []byte(videoURL))
+			r.AudioPath = e.relPath(p)
+			r.AudioMethod = "hls"
+			r.Status = "hls_pending"
+			return
+		}
+
+		// Direct URL: ffmpeg extracts audio from the remote file.
+		if err := extractAudio(ctx, videoURL, audioPath, verbose); err == nil {
+			r.AudioPath = e.relPath(audioPath)
+			r.AudioMethod = "ffmpeg-direct"
+			slog.Info("Audio extracted from direct URL", "id", ref.ID)
+			return
+		}
+		slog.Warn("Direct URL audio extraction failed, trying button download", "id", ref.ID)
+	}
+
+	// Fallback: download the full video via button, extract audio, then delete.
+	tmpVideo := audioPath + ".tmp.mp4"
+	if p := b.tryDownloadBtn(ctx, tmpVideo); p != "" {
+		if err := extractAudio(ctx, p, audioPath, verbose); err == nil {
+			_ = os.Remove(tmpVideo)
+			r.AudioPath = e.relPath(audioPath)
+			r.AudioMethod = "ffmpeg-local"
+			slog.Info("Audio extracted from downloaded video", "id", ref.ID)
+			return
+		}
+		_ = os.Remove(tmpVideo)
+	}
+
+	slog.Warn("Audio extraction failed", "id", ref.ID)
+}
+
 func (e *Exporter) relPath(abs string) string {
 	rel, err := filepath.Rel(e.cfg.OutputDir, abs)
 	if err != nil {
@@ -434,6 +601,8 @@ func (e *Exporter) relPath(abs string) string {
 }
 
 func (e *Exporter) lazyBrowser() (*Browser, error) {
+	e.browserMu.Lock()
+	defer e.browserMu.Unlock()
 	if e.browser != nil {
 		return e.browser, nil
 	}

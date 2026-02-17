@@ -190,6 +190,28 @@ func (b *Browser) countLinks() int {
 	return b.page.MustEval(`() => new Set([...document.querySelectorAll('a[href*="/app/meetings/"]')] .map(a => a.href).filter(h => /\/app\/meetings\/[a-f0-9-]+/i.test(h))).size `).Int()
 }
 
+// ── Video Source Discovery ──────────────────────────────────────────────────
+
+// FindVideoSource navigates to a meeting page and tries to locate a video URL
+// without downloading the file. Used by --audio-only to let ffmpeg stream
+// audio directly from the source, saving bandwidth.
+func (b *Browser) FindVideoSource(ctx context.Context, pageURL string) string {
+	if err := rod.Try(func() {
+		b.page.Timeout(20 * time.Second).MustNavigate(pageURL).MustWaitStable()
+	}); err != nil {
+		return ""
+	}
+	time.Sleep(2 * time.Second)
+
+	if u := b.extractVideoURL(); u != "" {
+		return u
+	}
+	if u := b.interceptNetwork(pageURL); u != "" {
+		return u
+	}
+	return ""
+}
+
 // ── Video Download ──────────────────────────────────────────────────────────
 
 func (b *Browser) DownloadVideo(ctx context.Context, pageURL, outputPath string) (method, result string) {
