@@ -90,8 +90,6 @@ func main() {
 	showVersion := false
 	intervalStr := coalesce(envGet(dotenv, "GRAIN_WATCH_INTERVAL"), "30m")
 
-	flag.StringVar(&cfg.Token, "token", envGet(dotenv, "GRAIN_API_TOKEN"), "Grain API token (visible in ps — prefer --token-file)")
-	flag.StringVar(&cfg.TokenFile, "token-file", envGet(dotenv, "GRAIN_TOKEN_FILE"), "Path to file containing API token")
 	flag.StringVar(&cfg.OutputDir, "output", coalesce(envGet(dotenv, "GRAIN_OUTPUT_DIR"), "./recordings"), "Output directory")
 	flag.StringVar(&cfg.SessionDir, "session-dir", coalesce(envGet(dotenv, "GRAIN_SESSION_DIR"), "./.grain-session"), "Browser session dir")
 	flag.IntVar(&cfg.MaxMeetings, "max", envInt(dotenv, "GRAIN_MAX_MEETINGS", 0), "Max meetings (0=all)")
@@ -124,18 +122,6 @@ func main() {
 		logLevel = slog.LevelDebug
 	}
 	slog.SetDefault(slog.New(NewColorHandler(os.Stderr, logLevel)))
-
-	// SEC-2: resolve token — file takes precedence
-	if cfg.TokenFile != "" {
-		data, err := os.ReadFile(cfg.TokenFile)
-		if err != nil {
-			slog.Error("Cannot read token file", "error", err)
-			os.Exit(1)
-		}
-		cfg.Token = strings.TrimSpace(string(data))
-	} else if cfg.Token != "" && cfg.Token != envGet(dotenv, "GRAIN_API_TOKEN") {
-		slog.Warn("Token passed via --token flag (visible in process list). Use --token-file or GRAIN_API_TOKEN env var instead.")
-	}
 
 	if cfg.Parallel < 1 {
 		cfg.Parallel = 1
@@ -186,11 +172,6 @@ func main() {
 	slog.Info(fmt.Sprintf("Throttle: %.1f–%.1fs random delay", cfg.MinDelaySec, cfg.MaxDelaySec))
 	if cfg.Parallel > 1 {
 		slog.Info(fmt.Sprintf("Parallel: %d workers", cfg.Parallel))
-	}
-	if cfg.Token != "" {
-		slog.Info(fmt.Sprintf("API: token (%d chars)", len(cfg.Token)))
-	} else {
-		slog.Warn("No API token — browser-only mode")
 	}
 	if cfg.AudioOnly {
 		if err := checkFFmpeg(); err != nil {

@@ -20,8 +20,8 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
-// Browser wraps Rod. Only used for: login → cookie export, meeting discovery,
-// and video downloads. All other HTTP goes through Scraper.
+// Browser wraps Rod for all Grain interactions: login, meeting discovery,
+// search filtering, and video downloads.
 type Browser struct {
 	browser  *rod.Browser
 	page     *rod.Page
