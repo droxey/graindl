@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -44,7 +45,9 @@ func renderObsidian(meta *Metadata, transcriptText string) string {
 		writeYAMLField(&b, "duration", dur)
 	}
 
-	writeYAMLList(&b, "aliases", []string{meta.Title})
+	if meta.Title != "" {
+		writeYAMLList(&b, "aliases", []string{meta.Title})
+	}
 
 	if meta.Links.Grain != "" {
 		writeYAMLField(&b, "grain_url", meta.Links.Grain)
@@ -60,7 +63,7 @@ func renderObsidian(meta *Metadata, transcriptText string) string {
 
 	// Body
 	b.WriteString("# ")
-	b.WriteString(meta.Title)
+	b.WriteString(coalesce(meta.Title, meta.ID))
 	b.WriteString("\n")
 
 	if notes := formatAny(meta.AINotes); notes != "" {
@@ -124,7 +127,7 @@ func renderNotion(meta *Metadata, transcriptText string) string {
 
 	// Body with info callout
 	b.WriteString("# ")
-	b.WriteString(meta.Title)
+	b.WriteString(coalesce(meta.Title, meta.ID))
 	b.WriteString("\n\n")
 
 	// Summary block
@@ -227,7 +230,8 @@ func needsYAMLQuoting(s string) bool {
 	}
 	for _, c := range s {
 		switch c {
-		case ':', '#', '[', ']', '{', '}', ',', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`':
+		case ':', '#', '[', ']', '{', '}', ',', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`',
+			'\n', '\r', '\t':
 			return true
 		}
 	}
@@ -246,6 +250,9 @@ func needsYAMLQuoting(s string) bool {
 func escapeYAMLString(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\t", `\t`)
 	return s
 }
 
@@ -348,10 +355,15 @@ func formatAny(v any) string {
 		if content, ok := val["content"].(string); ok {
 			return strings.TrimSpace(content)
 		}
-		// Fall back to key-value listing.
+		// Fall back to sorted key-value listing for stable output.
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
 		var lines []string
-		for k, v := range val {
-			lines = append(lines, fmt.Sprintf("**%s:** %v", k, v))
+		for _, k := range keys {
+			lines = append(lines, fmt.Sprintf("**%s:** %v", k, val[k]))
 		}
 		return strings.Join(lines, "\n")
 	}

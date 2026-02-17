@@ -96,6 +96,7 @@ func TestFormatAny(t *testing.T) {
 		}, "- First\n- Second"},
 		{"map text", map[string]any{"text": "hello"}, "hello"},
 		{"map content", map[string]any{"content": "world"}, "world"},
+		{"map fallback sorted", map[string]any{"zebra": "z", "alpha": "a"}, "**alpha:** a\n**zebra:** z"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -139,6 +140,21 @@ func TestEscapeYAMLString(t *testing.T) {
 	}
 	if got := escapeYAMLString(`path\to`); got != `path\\to` {
 		t.Errorf("got %q", got)
+	}
+	if got := escapeYAMLString("line1\nline2"); got != `line1\nline2` {
+		t.Errorf("newline escape: got %q", got)
+	}
+	if got := escapeYAMLString("col1\tcol2"); got != `col1\tcol2` {
+		t.Errorf("tab escape: got %q", got)
+	}
+}
+
+func TestNeedsYAMLQuotingNewline(t *testing.T) {
+	if !needsYAMLQuoting("has\nnewline") {
+		t.Error("newline should require quoting")
+	}
+	if !needsYAMLQuoting("has\ttab") {
+		t.Error("tab should require quoting")
 	}
 }
 
@@ -281,6 +297,24 @@ func TestRenderMinimalMetadata(t *testing.T) {
 	notion := renderFormattedMarkdown("notion", meta, "")
 	if !strings.Contains(notion, "title: Minimal") {
 		t.Error("notion: missing title")
+	}
+}
+
+func TestRenderObsidianEmptyTitle(t *testing.T) {
+	meta := &Metadata{
+		ID:    "no-title",
+		Title: "",
+		Links: Links{Grain: "https://grain.com/app/meetings/no-title"},
+	}
+	md := renderFormattedMarkdown("obsidian", meta, "")
+
+	// Should not contain an aliases field when title is empty.
+	if strings.Contains(md, "aliases:") {
+		t.Error("should not write aliases when title is empty")
+	}
+	// Heading should fall back to ID.
+	if !strings.Contains(md, "# no-title\n") {
+		t.Error("heading should fall back to ID when title is empty")
 	}
 }
 
