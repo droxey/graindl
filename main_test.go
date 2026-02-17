@@ -128,3 +128,29 @@ func TestEnvBool(t *testing.T) {
 		}
 	}
 }
+
+// ── GRAIN_AUDIO_ONLY env var ────────────────────────────────────────────────
+
+func TestEnvBoolAudioOnly(t *testing.T) {
+	env := map[string]string{"GRAIN_AUDIO_ONLY": "true"}
+	if !envBool(env, "GRAIN_AUDIO_ONLY") {
+		t.Error("GRAIN_AUDIO_ONLY=true should be truthy")
+	}
+
+	env["GRAIN_AUDIO_ONLY"] = "false"
+	if envBool(env, "GRAIN_AUDIO_ONLY") {
+		t.Error("GRAIN_AUDIO_ONLY=false should be falsy")
+	}
+}
+
+func TestAudioOnlyConfigField(t *testing.T) {
+	cfg := Config{AudioOnly: true, SkipVideo: false}
+	if !cfg.AudioOnly {
+		t.Error("AudioOnly should be true")
+	}
+	// AudioOnly and SkipVideo are independent flags.
+	cfg.SkipVideo = true
+	if !cfg.AudioOnly || !cfg.SkipVideo {
+		t.Error("both flags should be independently settable")
+	}
+}

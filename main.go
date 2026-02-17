@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var (
@@ -87,6 +88,7 @@ func main() {
 
 	var cfg Config
 	showVersion := false
+	intervalStr := coalesce(envGet(dotenv, "GRAIN_WATCH_INTERVAL"), "30m")
 
 	flag.StringVar(&cfg.Token, "token", envGet(dotenv, "GRAIN_API_TOKEN"), "Grain API token (visible in ps — prefer --token-file)")
 	flag.StringVar(&cfg.TokenFile, "token-file", envGet(dotenv, "GRAIN_TOKEN_FILE"), "Path to file containing API token")
@@ -96,13 +98,18 @@ func main() {
 	flag.StringVar(&cfg.MeetingID, "id", envGet(dotenv, "GRAIN_MEETING_ID"), "Export a single meeting by ID")
 	flag.BoolVar(&cfg.DryRun, "dry-run", envBool(dotenv, "GRAIN_DRY_RUN"), "List meetings that would be exported without exporting")
 	flag.BoolVar(&cfg.SkipVideo, "skip-video", envBool(dotenv, "GRAIN_SKIP_VIDEO"), "Skip video downloads")
+	flag.BoolVar(&cfg.AudioOnly, "audio-only", envBool(dotenv, "GRAIN_AUDIO_ONLY"), "Export audio track only (requires ffmpeg)")
 	flag.BoolVar(&cfg.Overwrite, "overwrite", envBool(dotenv, "GRAIN_OVERWRITE"), "Overwrite existing")
 	flag.BoolVar(&cfg.Headless, "headless", envBool(dotenv, "GRAIN_HEADLESS"), "Headless browser")
 	flag.BoolVar(&cfg.CleanSession, "clean-session", false, "Wipe browser session before run")
 	flag.BoolVar(&cfg.Verbose, "verbose", envBool(dotenv, "GRAIN_VERBOSE"), "Verbose output")
 	flag.Float64Var(&cfg.MinDelaySec, "min-delay", envFloat(dotenv, "GRAIN_MIN_DELAY", 2.0), "Min delay (seconds)")
 	flag.Float64Var(&cfg.MaxDelaySec, "max-delay", envFloat(dotenv, "GRAIN_MAX_DELAY", 6.0), "Max delay (seconds)")
+	flag.IntVar(&cfg.Parallel, "parallel", envInt(dotenv, "GRAIN_PARALLEL", 1), "Number of meetings to export concurrently")
 	flag.StringVar(&cfg.SearchQuery, "search", envGet(dotenv, "GRAIN_SEARCH"), "Search query to filter meetings")
+	flag.BoolVar(&cfg.Watch, "watch", envBool(dotenv, "GRAIN_WATCH"), "Run continuously, polling for new meetings")
+	flag.StringVar(&intervalStr, "interval", intervalStr, "Polling interval for watch mode (e.g. 5m, 30m, 1h)")
+	flag.StringVar(&cfg.OutputFormat, "output-format", envGet(dotenv, "GRAIN_OUTPUT_FORMAT"), "Export format: obsidian, notion (adds frontmatter markdown)")
 	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
 	flag.Parse()
 
@@ -130,6 +137,9 @@ func main() {
 		slog.Warn("Token passed via --token flag (visible in process list). Use --token-file or GRAIN_API_TOKEN env var instead.")
 	}
 
+	if cfg.Parallel < 1 {
+		cfg.Parallel = 1
+	}
 	if cfg.MinDelaySec < 0 {
 		cfg.MinDelaySec = 0
 	}
@@ -137,16 +147,60 @@ func main() {
 		cfg.MaxDelaySec = cfg.MinDelaySec + 1
 	}
 
+	// Watch mode: parse interval and validate flag combinations.
+	if cfg.Watch {
+		dur, err := time.ParseDuration(intervalStr)
+		if err != nil {
+			slog.Error("Invalid --interval value", "value", intervalStr, "error", err)
+			os.Exit(1)
+		}
+		if dur < 1*time.Minute {
+			slog.Error("--interval must be at least 1m", "value", dur)
+			os.Exit(1)
+		}
+		cfg.WatchInterval = dur
+		if cfg.MeetingID != "" {
+			slog.Error("--watch cannot be used with --id")
+			os.Exit(1)
+		}
+		if cfg.DryRun {
+			slog.Error("--watch cannot be used with --dry-run")
+			os.Exit(1)
+		}
+		if cfg.Overwrite {
+			slog.Error("--watch cannot be used with --overwrite (would re-export every meeting every cycle)")
+	if cfg.OutputFormat != "" {
+		cfg.OutputFormat = strings.ToLower(cfg.OutputFormat)
+		if cfg.OutputFormat != "obsidian" && cfg.OutputFormat != "notion" {
+			slog.Error("Invalid --output-format. Must be 'obsidian' or 'notion'.")
+			os.Exit(1)
+		}
+	}
+
 	slog.Info(fmt.Sprintf("graindl %s", version))
 	slog.Info(fmt.Sprintf("Output: %s", absPath(cfg.OutputDir)))
 	slog.Info(fmt.Sprintf("Throttle: %.1f–%.1fs random delay", cfg.MinDelaySec, cfg.MaxDelaySec))
+	if cfg.Parallel > 1 {
+		slog.Info(fmt.Sprintf("Parallel: %d workers", cfg.Parallel))
+	}
 	if cfg.Token != "" {
 		slog.Info(fmt.Sprintf("API: token (%d chars)", len(cfg.Token)))
 	} else {
 		slog.Warn("No API token — browser-only mode")
 	}
-	if cfg.SkipVideo {
+	if cfg.AudioOnly {
+		if err := checkFFmpeg(); err != nil {
+			slog.Error("--audio-only requires ffmpeg", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("Audio: extracting audio only (ffmpeg)")
+	} else if cfg.SkipVideo {
 		slog.Info("Video: skipped")
+	}
+	if cfg.Watch {
+		slog.Info(fmt.Sprintf("Watch: polling every %s (Ctrl-C to stop)", cfg.WatchInterval))
+	if cfg.OutputFormat != "" {
+		slog.Info(fmt.Sprintf("Format: %s", cfg.OutputFormat))
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -159,8 +213,15 @@ func main() {
 	}
 	defer exp.Close()
 
-	if err := exp.Run(ctx); err != nil {
-		slog.Error("Fatal", "error", err)
-		os.Exit(1)
+	if cfg.Watch {
+		if err := exp.RunWatch(ctx); err != nil {
+			slog.Error("Fatal", "error", err)
+			os.Exit(1)
+		}
+	} else {
+		if err := exp.Run(ctx); err != nil {
+			slog.Error("Fatal", "error", err)
+			os.Exit(1)
+		}
 	}
 }

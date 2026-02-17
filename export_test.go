@@ -1057,3 +1057,416 @@ func TestDryRunPrintDryRunOutput(t *testing.T) {
 		t.Errorf("expected unknown-date for meeting with no date, got:\n%s", output)
 	}
 }
+
+// ── Parallel export ──────────────────────────────────────────────────────────
+
+func TestParallelExportBasic(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/me":
+			json.NewEncoder(w).Encode(GrainUser{Name: "Test"})
+		case r.URL.Path == "/recordings" && r.URL.Query().Get("cursor") == "":
+			w.Write([]byte(`{"recordings":[
+				{"id":"p1","title":"Parallel 1","created_at":"2025-03-01"},
+				{"id":"p2","title":"Parallel 2","created_at":"2025-03-02"},
+				{"id":"p3","title":"Parallel 3","created_at":"2025-03-03"},
+				{"id":"p4","title":"Parallel 4","created_at":"2025-03-04"}
+			]}`))
+		default:
+			json.NewEncoder(w).Encode(GrainRecording{
+				ID: "p1", Transcript: "transcript",
+			})
+		}
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		AudioOnly:   true,
+		SkipVideo:   false,
+		SkipVideo:   true,
+		Parallel:    3,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+
+	ref := MeetingRef{
+		ID:    "audio-id",
+		Title: "Audio Meeting",
+		Date:  "2025-06-01T10:00:00Z",
+		URL:   "https://grain.com/app/meetings/audio-id",
+		APIData: &GrainRecording{
+			ID: "audio-id", Title: "Audio Meeting", CreatedAt: "2025-06-01T10:00:00Z",
+			Transcript: "Audio transcript",
+		},
+	}
+
+	r := e.exportOne(context.Background(), ref)
+
+	// Should produce metadata and transcripts.
+	if r.MetadataPath == "" {
+		t.Error("expected metadata to be written")
+	}
+
+	// Video path should be empty — audio-only mode doesn't write video.
+	if r.VideoPath != "" {
+		t.Errorf("VideoPath should be empty in audio-only mode, got %q", r.VideoPath)
+	}
+	if r.VideoMethod != "" {
+		t.Errorf("VideoMethod should be empty in audio-only mode, got %q", r.VideoMethod)
+	}
+
+	// Audio extraction will fail without a real browser, but the metadata
+	// and transcripts should still succeed.
+	if r.Status != "ok" {
+		t.Errorf("status = %q, want ok", r.Status)
+	}
+}
+
+func TestExportOneAudioOnlyAndSkipVideoMutualExclusion(t *testing.T) {
+	// When both --audio-only and --skip-video are set, audio-only takes
+	// priority (it's the more specific flag). Verify no video file is written.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(GrainRecording{
+			ID: "both-flags", Title: "Both Flags", CreatedAt: "2025-06-01",
+		})
+	defer e.Close()
+
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run --parallel 3: %v", err)
+	}
+
+	manifestPath := filepath.Join(dir, "_export-manifest.json")
+	if !fileExists(manifestPath) {
+		t.Fatal("manifest missing")
+	}
+	raw, _ := os.ReadFile(manifestPath)
+	var m ExportManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if m.Total != 4 {
+		t.Errorf("manifest.Total = %d, want 4", m.Total)
+	}
+	if m.OK != 4 {
+		t.Errorf("manifest.OK = %d, want 4", m.OK)
+	}
+	if len(m.Meetings) != 4 {
+		t.Fatalf("manifest.Meetings length = %d, want 4", len(m.Meetings))
+	}
+
+	// All meetings should have results (no nil slots).
+	for i, meeting := range m.Meetings {
+		if meeting == nil {
+			t.Errorf("manifest.Meetings[%d] is nil", i)
+			continue
+		}
+		if meeting.Status != "ok" {
+			t.Errorf("manifest.Meetings[%d].Status = %q, want ok", i, meeting.Status)
+		}
+	}
+}
+
+func TestParallelExportPreservesOrder(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/me":
+			json.NewEncoder(w).Encode(GrainUser{Name: "Test"})
+		case r.URL.Path == "/recordings":
+			w.Write([]byte(`{"recordings":[
+				{"id":"a1","title":"Alpha","created_at":"2025-01-01"},
+				{"id":"b2","title":"Bravo","created_at":"2025-01-02"},
+				{"id":"c3","title":"Charlie","created_at":"2025-01-03"}
+			]}`))
+		default:
+			json.NewEncoder(w).Encode(GrainRecording{ID: "a1", Transcript: "text"})
+		}
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		SkipVideo:   true,
+		Parallel:    3,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	raw, _ := os.ReadFile(filepath.Join(dir, "_export-manifest.json"))
+	var m ExportManifest
+	json.Unmarshal(raw, &m)
+
+	// Results should appear in the original discovery order.
+	expectedIDs := []string{"a1", "b2", "c3"}
+	for i, want := range expectedIDs {
+		if m.Meetings[i] == nil {
+			t.Fatalf("manifest.Meetings[%d] is nil", i)
+		}
+		if m.Meetings[i].ID != want {
+			t.Errorf("manifest.Meetings[%d].ID = %q, want %q", i, m.Meetings[i].ID, want)
+		}
+	}
+}
+
+func TestParallelExportSkipsExisting(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/me":
+			json.NewEncoder(w).Encode(GrainUser{Name: "Test"})
+		case r.URL.Path == "/recordings":
+			w.Write([]byte(`{"recordings":[
+				{"id":"e1","title":"Existing","created_at":"2025-05-01"},
+				{"id":"n1","title":"New","created_at":"2025-05-02"}
+			]}`))
+		default:
+			json.NewEncoder(w).Encode(GrainRecording{ID: "n1", Transcript: "new content"})
+		}
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		AudioOnly:   true,
+		SkipVideo:   true,
+		Parallel:    2,
+		Overwrite:   false,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+
+	ref := MeetingRef{
+		ID: "both-flags", Title: "Both Flags", Date: "2025-06-01",
+		APIData: &GrainRecording{ID: "both-flags", Title: "Both Flags"},
+	}
+
+	r := e.exportOne(context.Background(), ref)
+	if r.VideoPath != "" {
+		t.Errorf("VideoPath should be empty, got %q", r.VideoPath)
+	}
+}
+
+func TestRunSingleMeetingAudioOnly(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(GrainRecording{
+			ID: "audio-single", Title: "Audio Single", CreatedAt: "2025-08-10T09:00:00Z",
+			Transcript: "This is the transcript",
+		})
+	defer e.Close()
+
+	// Pre-create the first meeting's metadata file.
+	dateDir := filepath.Join(dir, "2025-05-01")
+	os.MkdirAll(dateDir, 0o755)
+	os.WriteFile(filepath.Join(dateDir, "e1.json"), []byte("{}"), 0o600)
+
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	raw, _ := os.ReadFile(filepath.Join(dir, "_export-manifest.json"))
+	var m ExportManifest
+	json.Unmarshal(raw, &m)
+
+	if m.Skipped != 1 {
+		t.Errorf("manifest.Skipped = %d, want 1", m.Skipped)
+	}
+	if m.OK != 1 {
+		t.Errorf("manifest.OK = %d, want 1", m.OK)
+	}
+}
+
+func TestParallelExportCancellation(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/me":
+			json.NewEncoder(w).Encode(GrainUser{Name: "Test"})
+		case r.URL.Path == "/recordings":
+			w.Write([]byte(`{"recordings":[
+				{"id":"c1","title":"Cancel 1","created_at":"2025-06-01"},
+				{"id":"c2","title":"Cancel 2","created_at":"2025-06-02"}
+			]}`))
+		default:
+			json.NewEncoder(w).Encode(GrainRecording{ID: "c1"})
+		}
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		MeetingID:   "audio-single",
+		AudioOnly:   true,
+		SkipVideo:   true,
+		Parallel:    2,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run with --id --audio-only: %v", err)
+	}
+
+	manifestPath := filepath.Join(dir, "_export-manifest.json")
+	if !fileExists(manifestPath) {
+		t.Fatal("manifest missing")
+	}
+	raw, _ := os.ReadFile(manifestPath)
+	var m ExportManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if m.Total != 1 {
+		t.Errorf("manifest.Total = %d, want 1", m.Total)
+	}
+	if m.OK != 1 {
+		t.Errorf("manifest.OK = %d, want 1", m.OK)
+	}
+	// Video should not be present.
+	if m.Meetings[0].VideoPath != "" {
+		t.Errorf("VideoPath should be empty in audio-only mode, got %q", m.Meetings[0].VideoPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately.
+
+	// Should not panic or hang.
+	_ = e.Run(ctx)
+
+	// Manifest should have no nil entries (compaction removes undispatched slots).
+	for i, m := range e.manifest.Meetings {
+		if m == nil {
+			t.Errorf("manifest.Meetings[%d] is nil after cancellation", i)
+		}
+	}
+}
+
+func TestParallelExportWithMaxMeetings(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/me":
+			json.NewEncoder(w).Encode(GrainUser{Name: "Test"})
+		case r.URL.Path == "/recordings":
+			w.Write([]byte(`{"recordings":[
+				{"id":"m1","title":"Meet 1","created_at":"2025-07-01"},
+				{"id":"m2","title":"Meet 2","created_at":"2025-07-02"},
+				{"id":"m3","title":"Meet 3","created_at":"2025-07-03"},
+				{"id":"m4","title":"Meet 4","created_at":"2025-07-04"},
+				{"id":"m5","title":"Meet 5","created_at":"2025-07-05"}
+			]}`))
+		default:
+			json.NewEncoder(w).Encode(GrainRecording{ID: "m1", Transcript: "x"})
+		}
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		SkipVideo:   true,
+		Parallel:    4,
+		MaxMeetings: 3,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	raw, _ := os.ReadFile(filepath.Join(dir, "_export-manifest.json"))
+	var m ExportManifest
+	json.Unmarshal(raw, &m)
+
+	if m.Total != 3 {
+		t.Errorf("manifest.Total = %d, want 3 (capped by --max)", m.Total)
+	}
+	if m.OK != 3 {
+		t.Errorf("manifest.OK = %d, want 3", m.OK)
+	}
+}
+
+func TestParallelOneIsSequential(t *testing.T) {
+	// --parallel 1 should behave identically to sequential mode.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/me":
+			json.NewEncoder(w).Encode(GrainUser{Name: "Test"})
+		case r.URL.Path == "/recordings":
+			w.Write([]byte(`{"recordings":[
+				{"id":"s1","title":"Seq 1","created_at":"2025-08-01"},
+				{"id":"s2","title":"Seq 2","created_at":"2025-08-02"}
+			]}`))
+		default:
+			json.NewEncoder(w).Encode(GrainRecording{ID: "s1", Transcript: "text"})
+		}
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		SkipVideo:   true,
+		Parallel:    1,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run --parallel 1: %v", err)
+	}
+
+	raw, _ := os.ReadFile(filepath.Join(dir, "_export-manifest.json"))
+	var m ExportManifest
+	json.Unmarshal(raw, &m)
+
+	if m.Total != 2 {
+		t.Errorf("manifest.Total = %d, want 2", m.Total)
+	}
+	if m.OK != 2 {
+		t.Errorf("manifest.OK = %d, want 2", m.OK)
+	}
+}

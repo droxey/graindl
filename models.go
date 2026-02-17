@@ -8,19 +8,39 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
 type Config struct {
+	Token         string
+	TokenFile     string
+	OutputDir     string
+	SessionDir    string
+	MaxMeetings   int
+	MeetingID     string
+	DryRun        bool
+	SkipVideo     bool
+	Overwrite     bool
+	Headless      bool
+	CleanSession  bool
+	Verbose       bool
+	MinDelaySec   float64
+	MaxDelaySec   float64
+	SearchQuery   string
+	Watch         bool
+	WatchInterval time.Duration
 	Token        string
 	TokenFile    string
 	OutputDir    string
 	SessionDir   string
 	MaxMeetings  int
 	MeetingID    string
+	Parallel     int
 	DryRun       bool
 	SkipVideo    bool
+	AudioOnly    bool
 	Overwrite    bool
 	Headless     bool
 	CleanSession bool
@@ -28,6 +48,7 @@ type Config struct {
 	MinDelaySec  float64
 	MaxDelaySec  float64
 	SearchQuery  string
+	OutputFormat string // "", "obsidian", "notion"
 }
 
 // ── Grain API Types (GO-3) ──────────────────────────────────────────────────
@@ -133,10 +154,13 @@ type ExportResult struct {
 	DateDir         string            `json:"date_dir"`
 	Status          string            `json:"status"`
 	MetadataPath    string            `json:"metadata_path,omitempty"`
+	MarkdownPath    string            `json:"markdown_path,omitempty"`
 	TranscriptPaths map[string]string `json:"transcript_paths,omitempty"`
 	HighlightsPath  string            `json:"highlights_path,omitempty"`
 	VideoPath       string            `json:"video_path,omitempty"`
 	VideoMethod     string            `json:"video_method,omitempty"`
+	AudioPath       string            `json:"audio_path,omitempty"`
+	AudioMethod     string            `json:"audio_method,omitempty"`
 	ErrorMsg        string            `json:"error_msg,omitempty"`
 }
 
