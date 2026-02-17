@@ -324,6 +324,9 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 
 	e.writeMetadata(rec, ref, metaPath, r)
 	e.writeTranscripts(ctx, rec, ref.ID, base, r)
+	if e.cfg.OutputFormat != "" {
+		e.writeFormattedMarkdown(rec, ref, base, r)
+	}
 	if !e.cfg.SkipVideo {
 		e.writeVideo(ctx, ref, videoPath, r)
 	}
@@ -397,6 +400,35 @@ func (e *Exporter) writeTranscripts(ctx context.Context, rec *GrainRecording, id
 				slog.Debug("Transcript written", "format", "text", "id", id)
 			}
 		}
+	}
+}
+
+func (e *Exporter) writeFormattedMarkdown(rec *GrainRecording, ref MeetingRef, base string, r *ExportResult) {
+	var meta *Metadata
+	if rec != nil {
+		meta = buildMetadata(rec, ref.URL)
+	} else {
+		meta = minimalMetadata(ref.ID, ref.Title, ref.URL)
+	}
+
+	// Read back the text transcript if it was written.
+	var transcriptText string
+	if tp, ok := r.TranscriptPaths["text"]; ok {
+		absPath := filepath.Join(e.cfg.OutputDir, tp)
+		if data, err := os.ReadFile(absPath); err == nil {
+			transcriptText = string(data)
+		}
+	}
+
+	md := renderFormattedMarkdown(e.cfg.OutputFormat, meta, transcriptText)
+	if md == "" {
+		return
+	}
+
+	p := base + ".md"
+	if writeFile(p, []byte(md)) == nil {
+		r.MarkdownPath = e.relPath(p)
+		slog.Debug("Formatted markdown written", "format", e.cfg.OutputFormat, "id", ref.ID)
 	}
 }
 
