@@ -75,20 +75,29 @@ func (h *ColorHandler) Handle(_ context.Context, r slog.Record) error {
 
 // collectAttrs merges inherited attrs with the record's attrs,
 // filtering out any with empty string values.
+// If a group is set, attribute keys are prefixed with "group.".
 func (h *ColorHandler) collectAttrs(r slog.Record) []slog.Attr {
 	var out []slog.Attr
 	for _, a := range h.attrs {
 		if a.Value.String() != "" {
-			out = append(out, a)
+			out = append(out, h.prefixAttr(a))
 		}
 	}
 	r.Attrs(func(a slog.Attr) bool {
 		if a.Value.String() != "" {
-			out = append(out, a)
+			out = append(out, h.prefixAttr(a))
 		}
 		return true
 	})
 	return out
+}
+
+// prefixAttr prepends the group name to an attribute key if a group is set.
+func (h *ColorHandler) prefixAttr(a slog.Attr) slog.Attr {
+	if h.group != "" {
+		a.Key = h.group + "." + a.Key
+	}
+	return a
 }
 
 func (h *ColorHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -101,10 +110,14 @@ func (h *ColorHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 func (h *ColorHandler) WithGroup(name string) slog.Handler {
+	newGroup := name
+	if h.group != "" {
+		newGroup = h.group + "." + name
+	}
 	return &ColorHandler{
 		w:     h.w,
 		level: h.level,
 		attrs: h.attrs,
-		group: name,
+		group: newGroup,
 	}
 }

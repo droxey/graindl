@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 )
 
@@ -37,6 +38,13 @@ func (e *Exporter) RunWatch(ctx context.Context) error {
 
 		if err != nil {
 			slog.Error("Cycle failed (will retry)", "cycle", cycle, "error", err)
+		}
+
+		// Touch healthcheck file so external monitors can detect liveness.
+		if e.cfg.HealthcheckFile != "" {
+			if err := os.WriteFile(e.cfg.HealthcheckFile, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600); err != nil {
+				slog.Warn("Healthcheck file write failed", "error", err)
+			}
 		}
 
 		slog.Info(fmt.Sprintf("── cycle %d done (exported=%d skipped=%d errors=%d) — next poll in %s ──",

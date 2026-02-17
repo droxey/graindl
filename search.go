@@ -68,7 +68,7 @@ func (b *Browser) Search(ctx context.Context, query string) ([]SearchResult, err
 // waitForResults waits for at least one search result to appear,
 // or returns early if Grain shows a "no results" message.
 func (b *Browser) waitForResults(ctx context.Context, page *rod.Page) error {
-	ctx, cancel := context.WithTimeout(ctx, resultLoadTimeout)
+	tCtx, cancel := context.WithTimeout(ctx, resultLoadTimeout)
 	defer cancel()
 
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -76,8 +76,8 @@ func (b *Browser) waitForResults(ctx context.Context, page *rod.Page) error {
 
 	for {
 		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for results: %w", ctx.Err())
+		case <-tCtx.Done():
+			return fmt.Errorf("timed out waiting for results: %w", tCtx.Err())
 		case <-ticker.C:
 			has, _, err := page.Has(searchResultSel)
 			if err != nil {
@@ -258,12 +258,12 @@ func (b *Browser) newPage(ctx context.Context) (*rod.Page, error) {
 
 // navigate goes to a URL with context-aware timeout.
 func (b *Browser) navigate(ctx context.Context, page *rod.Page, targetURL string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	tCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	err := page.Context(ctx).Navigate(targetURL)
+	err := page.Context(tCtx).Navigate(targetURL)
 	if err != nil {
 		return err
 	}
-	return page.Context(ctx).WaitLoad()
+	return page.Context(tCtx).WaitLoad()
 }

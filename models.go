@@ -30,8 +30,10 @@ type Config struct {
 	MaxDelaySec   float64
 	SearchQuery   string
 	OutputFormat  string // "", "obsidian", "notion"
-	Watch         bool
-	WatchInterval time.Duration
+	Watch           bool
+	WatchInterval   time.Duration
+	HealthcheckFile string
+	LogFormat       string // "", "json"
 }
 
 // ── Export Types ─────────────────────────────────────────────────────────────
@@ -277,8 +279,8 @@ func sanitize(s string) string {
 	s = strings.TrimLeft(s, ".-")
 	s = strings.TrimRight(s, ".- ")
 	s = strings.TrimSpace(s)
-	if len(s) > 200 {
-		s = s[:200]
+	if r := []rune(s); len(r) > 200 {
+		s = string(r[:200])
 	}
 	if s == "" {
 		s = "unnamed"

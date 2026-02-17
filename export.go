@@ -358,15 +358,19 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 	}
 
 	// Scrape meeting page for transcript, highlights, and extra metadata.
+	// Browser operations are serialized via withBrowser to prevent
+	// concurrent page navigations when --parallel > 1.
 	pageURL := coalesce(ref.URL, meetingURL(ref.ID))
 	var scraped *MeetingPageData
-	if b, err := e.lazyBrowser(); err == nil {
-		if data, err := b.ScrapeMeetingPage(ctx, pageURL); err == nil {
-			scraped = data
-		} else {
+	_ = e.withBrowser(func(b *Browser) error {
+		data, err := b.ScrapeMeetingPage(ctx, pageURL)
+		if err != nil {
 			slog.Warn("Meeting page scrape failed, continuing with minimal data", "id", ref.ID, "error", err)
+			return nil // non-fatal
 		}
-	}
+		scraped = data
+		return nil
+	})
 
 	meta := e.buildScrapedMetadata(ref, pageURL, scraped)
 
@@ -446,10 +450,12 @@ func (e *Exporter) writeTranscript(scraped *MeetingPageData, id, base string, r 
 	}
 
 	p := base + ".transcript.txt"
-	if writeFile(p, []byte(scraped.Transcript)) == nil {
-		r.TranscriptPaths["text"] = e.relPath(p)
-		slog.Info("Transcript exported", "id", id)
+	if err := writeFile(p, []byte(scraped.Transcript)); err != nil {
+		slog.Error("Transcript write failed", "error", err, "id", id)
+		return
 	}
+	r.TranscriptPaths["text"] = e.relPath(p)
+	slog.Info("Transcript exported", "id", id)
 }
 
 func (e *Exporter) writeHighlights(scraped *MeetingPageData, id, base string, r *ExportResult) {
@@ -478,51 +484,49 @@ func (e *Exporter) writeFormattedMarkdown(meta *Metadata, transcriptText, base s
 	}
 
 	p := base + ".md"
-	if writeFile(p, []byte(md)) == nil {
-		r.MarkdownPath = e.relPath(p)
-		slog.Debug("Formatted markdown written", "format", e.cfg.OutputFormat, "id", meta.ID)
+	if err := writeFile(p, []byte(md)); err != nil {
+		slog.Error("Markdown write failed", "error", err, "id", meta.ID)
+		return
 	}
+	r.MarkdownPath = e.relPath(p)
+	slog.Debug("Formatted markdown written", "format", e.cfg.OutputFormat, "id", meta.ID)
 }
 
 func (e *Exporter) writeVideo(ctx context.Context, ref MeetingRef, videoPath string, r *ExportResult) {
-	b, err := e.lazyBrowser()
-	if err != nil {
-		slog.Error("Browser init failed", "error", err)
-		return
-	}
 	slog.Debug("Downloading video", "id", ref.ID)
-	method, path := b.DownloadVideo(ctx, coalesce(ref.URL, meetingURL(ref.ID)), videoPath)
-	r.VideoMethod = method
-	switch method {
-	case "button", "direct":
-		r.VideoPath = e.relPath(path)
-		slog.Info("Video downloaded", "method", method, "id", ref.ID)
-	case "hls":
-		r.VideoPath = e.relPath(path)
-		r.Status = "hls_pending"
-		slog.Warn("HLS stream — run convert_hls.sh", "id", ref.ID)
-	case "url-saved":
-		r.VideoPath = e.relPath(path)
-		slog.Warn("URL saved (manual download needed)", "id", ref.ID)
-	default:
-		slog.Warn("Video download failed", "id", ref.ID)
-	}
+	_ = e.withBrowser(func(b *Browser) error {
+		method, path := b.DownloadVideo(ctx, coalesce(ref.URL, meetingURL(ref.ID)), videoPath)
+		r.VideoMethod = method
+		switch method {
+		case "button", "direct":
+			r.VideoPath = e.relPath(path)
+			slog.Info("Video downloaded", "method", method, "id", ref.ID)
+		case "hls":
+			r.VideoPath = e.relPath(path)
+			r.Status = "hls_pending"
+			slog.Warn("HLS stream — run convert_hls.sh", "id", ref.ID)
+		case "url-saved":
+			r.VideoPath = e.relPath(path)
+			slog.Warn("URL saved (manual download needed)", "id", ref.ID)
+		default:
+			slog.Warn("Video download failed", "id", ref.ID)
+		}
+		return nil
+	})
 }
 
 func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, audioPath string, r *ExportResult) {
-	b, err := e.lazyBrowser()
-	if err != nil {
-		slog.Error("Browser init failed", "error", err)
-		return
-	}
-
 	pageURL := coalesce(ref.URL, meetingURL(ref.ID))
 	slog.Debug("Finding video source for audio extraction", "id", ref.ID)
 
-	// Try to find a video URL without downloading — lets ffmpeg stream
-	// just the audio track, saving bandwidth and disk.
+	// Find video URL under browser lock, then release for ffmpeg work.
+	var videoURL string
+	_ = e.withBrowser(func(b *Browser) error {
+		videoURL = b.FindVideoSource(ctx, pageURL)
+		return nil
+	})
+
 	verbose := e.cfg.Verbose
-	videoURL := b.FindVideoSource(ctx, pageURL)
 	if videoURL != "" {
 		if strings.Contains(videoURL, ".m3u8") {
 			// HLS: ffmpeg can extract audio directly from the manifest.
@@ -534,7 +538,9 @@ func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, audioPath str
 			}
 			slog.Warn("HLS audio extraction failed, saving URL", "id", ref.ID)
 			p := strings.TrimSuffix(audioPath, ".m4a") + ".m3u8.url"
-			_ = writeFile(p, []byte(videoURL))
+			if err := writeFile(p, []byte(videoURL)); err != nil {
+				slog.Error("Failed to write HLS URL file", "error", err)
+			}
 			r.AudioPath = e.relPath(p)
 			r.AudioMethod = "hls"
 			r.Status = "hls_pending"
@@ -551,10 +557,15 @@ func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, audioPath str
 		slog.Warn("Direct URL audio extraction failed, trying button download", "id", ref.ID)
 	}
 
-	// Fallback: download the full video via button, extract audio, then delete.
+	// Fallback: download the full video via button (under browser lock), extract audio, then delete.
 	tmpVideo := audioPath + ".tmp.mp4"
-	if p := b.tryDownloadBtn(ctx, tmpVideo); p != "" {
-		if err := extractAudio(ctx, p, audioPath, verbose); err == nil {
+	var btnPath string
+	_ = e.withBrowser(func(b *Browser) error {
+		btnPath = b.tryDownloadBtn(ctx, tmpVideo)
+		return nil
+	})
+	if btnPath != "" {
+		if err := extractAudio(ctx, btnPath, audioPath, verbose); err == nil {
 			_ = os.Remove(tmpVideo)
 			r.AudioPath = e.relPath(audioPath)
 			r.AudioMethod = "ffmpeg-local"
@@ -578,6 +589,12 @@ func (e *Exporter) relPath(abs string) string {
 func (e *Exporter) lazyBrowser() (*Browser, error) {
 	e.browserMu.Lock()
 	defer e.browserMu.Unlock()
+	return e.getBrowserLocked()
+}
+
+// getBrowserLocked initializes the browser if needed.
+// Caller must hold e.browserMu.
+func (e *Exporter) getBrowserLocked() (*Browser, error) {
 	if e.browser != nil {
 		return e.browser, nil
 	}
@@ -587,4 +604,17 @@ func (e *Exporter) lazyBrowser() (*Browser, error) {
 	}
 	e.browser = b
 	return b, nil
+}
+
+// withBrowser serializes all browser operations via browserMu.
+// This prevents concurrent page navigations when --parallel > 1,
+// since Browser holds a single shared *rod.Page.
+func (e *Exporter) withBrowser(fn func(b *Browser) error) error {
+	e.browserMu.Lock()
+	defer e.browserMu.Unlock()
+	b, err := e.getBrowserLocked()
+	if err != nil {
+		return fmt.Errorf("browser init: %w", err)
+	}
+	return fn(b)
 }
