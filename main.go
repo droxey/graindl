@@ -96,6 +96,7 @@ func main() {
 	flag.StringVar(&cfg.MeetingID, "id", envGet(dotenv, "GRAIN_MEETING_ID"), "Export a single meeting by ID")
 	flag.BoolVar(&cfg.DryRun, "dry-run", envBool(dotenv, "GRAIN_DRY_RUN"), "List meetings that would be exported without exporting")
 	flag.BoolVar(&cfg.SkipVideo, "skip-video", envBool(dotenv, "GRAIN_SKIP_VIDEO"), "Skip video downloads")
+	flag.BoolVar(&cfg.AudioOnly, "audio-only", envBool(dotenv, "GRAIN_AUDIO_ONLY"), "Export audio track only (requires ffmpeg)")
 	flag.BoolVar(&cfg.Overwrite, "overwrite", envBool(dotenv, "GRAIN_OVERWRITE"), "Overwrite existing")
 	flag.BoolVar(&cfg.Headless, "headless", envBool(dotenv, "GRAIN_HEADLESS"), "Headless browser")
 	flag.BoolVar(&cfg.CleanSession, "clean-session", false, "Wipe browser session before run")
@@ -161,7 +162,13 @@ func main() {
 	} else {
 		slog.Warn("No API token — browser-only mode")
 	}
-	if cfg.SkipVideo {
+	if cfg.AudioOnly {
+		if err := checkFFmpeg(); err != nil {
+			slog.Error("--audio-only requires ffmpeg", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("Audio: extracting audio only (ffmpeg)")
+	} else if cfg.SkipVideo {
 		slog.Info("Video: skipped")
 	}
 	if cfg.OutputFormat != "" {

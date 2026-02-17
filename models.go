@@ -21,6 +21,7 @@ type Config struct {
 	Parallel     int
 	DryRun       bool
 	SkipVideo    bool
+	AudioOnly    bool
 	Overwrite    bool
 	Headless     bool
 	CleanSession bool
@@ -138,6 +139,8 @@ type ExportResult struct {
 	TranscriptPaths map[string]string `json:"transcript_paths,omitempty"`
 	VideoPath       string            `json:"video_path,omitempty"`
 	VideoMethod     string            `json:"video_method,omitempty"`
+	AudioPath       string            `json:"audio_path,omitempty"`
+	AudioMethod     string            `json:"audio_method,omitempty"`
 	ErrorMsg        string            `json:"error_msg,omitempty"`
 }
 
