@@ -7,26 +7,29 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
 type Config struct {
-	Token        string
-	TokenFile    string
-	OutputDir    string
-	SessionDir   string
-	MaxMeetings  int
-	MeetingID    string
-	DryRun       bool
-	SkipVideo    bool
-	Overwrite    bool
-	Headless     bool
-	CleanSession bool
-	Verbose      bool
-	MinDelaySec  float64
-	MaxDelaySec  float64
-	SearchQuery  string
+	Token         string
+	TokenFile     string
+	OutputDir     string
+	SessionDir    string
+	MaxMeetings   int
+	MeetingID     string
+	DryRun        bool
+	SkipVideo     bool
+	Overwrite     bool
+	Headless      bool
+	CleanSession  bool
+	Verbose       bool
+	MinDelaySec   float64
+	MaxDelaySec   float64
+	SearchQuery   string
+	Watch         bool
+	WatchInterval time.Duration
 }
 
 // ── Grain API Types (GO-3) ──────────────────────────────────────────────────

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var (
@@ -87,6 +88,7 @@ func main() {
 
 	var cfg Config
 	showVersion := false
+	intervalStr := coalesce(envGet(dotenv, "GRAIN_WATCH_INTERVAL"), "30m")
 
 	flag.StringVar(&cfg.Token, "token", envGet(dotenv, "GRAIN_API_TOKEN"), "Grain API token (visible in ps — prefer --token-file)")
 	flag.StringVar(&cfg.TokenFile, "token-file", envGet(dotenv, "GRAIN_TOKEN_FILE"), "Path to file containing API token")
@@ -103,6 +105,8 @@ func main() {
 	flag.Float64Var(&cfg.MinDelaySec, "min-delay", envFloat(dotenv, "GRAIN_MIN_DELAY", 2.0), "Min delay (seconds)")
 	flag.Float64Var(&cfg.MaxDelaySec, "max-delay", envFloat(dotenv, "GRAIN_MAX_DELAY", 6.0), "Max delay (seconds)")
 	flag.StringVar(&cfg.SearchQuery, "search", envGet(dotenv, "GRAIN_SEARCH"), "Search query to filter meetings")
+	flag.BoolVar(&cfg.Watch, "watch", envBool(dotenv, "GRAIN_WATCH"), "Run continuously, polling for new meetings")
+	flag.StringVar(&intervalStr, "interval", intervalStr, "Polling interval for watch mode (e.g. 5m, 30m, 1h)")
 	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
 	flag.Parse()
 
@@ -137,6 +141,28 @@ func main() {
 		cfg.MaxDelaySec = cfg.MinDelaySec + 1
 	}
 
+	// Watch mode: parse interval and validate flag combinations.
+	if cfg.Watch {
+		dur, err := time.ParseDuration(intervalStr)
+		if err != nil {
+			slog.Error("Invalid --interval value", "value", intervalStr, "error", err)
+			os.Exit(1)
+		}
+		if dur < 1*time.Minute {
+			slog.Error("--interval must be at least 1m", "value", dur)
+			os.Exit(1)
+		}
+		cfg.WatchInterval = dur
+		if cfg.MeetingID != "" {
+			slog.Error("--watch cannot be used with --id")
+			os.Exit(1)
+		}
+		if cfg.DryRun {
+			slog.Error("--watch cannot be used with --dry-run")
+			os.Exit(1)
+		}
+	}
+
 	slog.Info(fmt.Sprintf("graindl %s", version))
 	slog.Info(fmt.Sprintf("Output: %s", absPath(cfg.OutputDir)))
 	slog.Info(fmt.Sprintf("Throttle: %.1f–%.1fs random delay", cfg.MinDelaySec, cfg.MaxDelaySec))
@@ -147,6 +173,9 @@ func main() {
 	}
 	if cfg.SkipVideo {
 		slog.Info("Video: skipped")
+	}
+	if cfg.Watch {
+		slog.Info(fmt.Sprintf("Watch: polling every %s", cfg.WatchInterval))
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -159,8 +188,15 @@ func main() {
 	}
 	defer exp.Close()
 
-	if err := exp.Run(ctx); err != nil {
-		slog.Error("Fatal", "error", err)
-		os.Exit(1)
+	if cfg.Watch {
+		if err := exp.RunWatch(ctx); err != nil {
+			slog.Error("Fatal", "error", err)
+			os.Exit(1)
+		}
+	} else {
+		if err := exp.Run(ctx); err != nil {
+			slog.Error("Fatal", "error", err)
+			os.Exit(1)
+		}
 	}
 }
