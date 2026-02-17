@@ -169,6 +169,10 @@ func main() {
 		}
 		if cfg.Overwrite {
 			slog.Error("--watch cannot be used with --overwrite (would re-export every meeting every cycle)")
+			os.Exit(1)
+		}
+	}
+
 	if cfg.OutputFormat != "" {
 		cfg.OutputFormat = strings.ToLower(cfg.OutputFormat)
 		if cfg.OutputFormat != "obsidian" && cfg.OutputFormat != "notion" {
@@ -199,6 +203,7 @@ func main() {
 	}
 	if cfg.Watch {
 		slog.Info(fmt.Sprintf("Watch: polling every %s (Ctrl-C to stop)", cfg.WatchInterval))
+	}
 	if cfg.OutputFormat != "" {
 		slog.Info(fmt.Sprintf("Format: %s", cfg.OutputFormat))
 	}
