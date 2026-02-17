@@ -213,121 +213,7 @@ func TestEnsureDirPermissions(t *testing.T) {
 	}
 }
 
-// ── GrainRecording accessors ────────────────────────────────────────────────
-
-func TestGrainRecordingAccessors(t *testing.T) {
-	rec := GrainRecording{
-		Title: "", Name: "Fallback Name",
-		CreatedAt: "", StartTime: "2025-03-01T10:00:00Z",
-		ShareURL: "", PublicURL: "https://share.grain.com/abc",
-		Transcript: "", TranscriptText: "Hello world",
-		Participants: nil, Attendees: []any{"Alice"},
-		Tags: nil, Labels: []any{"tag1"},
-		IntelligenceNotes: nil, Notes: "some notes",
-	}
-
-	if got := rec.GetTitle(); got != "Fallback Name" {
-		t.Errorf("GetTitle = %q, want 'Fallback Name'", got)
-	}
-	if got := rec.GetDate(); got != "2025-03-01T10:00:00Z" {
-		t.Errorf("GetDate = %q", got)
-	}
-	if got := rec.GetShareURL(); got != "https://share.grain.com/abc" {
-		t.Errorf("GetShareURL = %q", got)
-	}
-	if got := rec.GetTranscript(); got != "Hello world" {
-		t.Errorf("GetTranscript = %q", got)
-	}
-	if got := rec.GetParticipants(); got == nil {
-		t.Error("GetParticipants should return Attendees fallback")
-	}
-	if got := rec.GetTags(); got == nil {
-		t.Error("GetTags should return Labels fallback")
-	}
-	if got := rec.GetNotes(); got != "some notes" {
-		t.Errorf("GetNotes = %v", got)
-	}
-}
-
-func TestGrainRecordingDefaults(t *testing.T) {
-	rec := GrainRecording{} // all zero values
-	if got := rec.GetTitle(); got != "Untitled" {
-		t.Errorf("empty GetTitle = %q, want 'Untitled'", got)
-	}
-	if got := rec.GetDate(); got != "" {
-		t.Errorf("empty GetDate should be empty, got %q", got)
-	}
-}
-
-// ── RecordingsPage UnmarshalJSON ────────────────────────────────────────────
-
-func TestRecordingsPageUnmarshal(t *testing.T) {
-	tests := []struct {
-		name    string
-		json    string
-		wantN   int
-		wantCur string
-	}{
-		{
-			"recordings key",
-			`{"recordings":[{"id":"a","title":"A"}],"cursor":"cur1"}`,
-			1, "cur1",
-		},
-		{
-			"data key",
-			`{"data":[{"id":"b"},{"id":"c"}],"next_cursor":"cur2"}`,
-			2, "cur2",
-		},
-		{
-			"items key + camelCase cursor",
-			`{"items":[{"id":"d"}],"nextCursor":"cur3"}`,
-			1, "cur3",
-		},
-		{
-			"empty",
-			`{}`,
-			0, "",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var page RecordingsPage
-			if err := json.Unmarshal([]byte(tt.json), &page); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if len(page.Recordings) != tt.wantN {
-				t.Errorf("recordings count = %d, want %d", len(page.Recordings), tt.wantN)
-			}
-			if page.Cursor != tt.wantCur {
-				t.Errorf("cursor = %q, want %q", page.Cursor, tt.wantCur)
-			}
-		})
-	}
-}
-
-// ── buildMetadata / minimalMetadata ─────────────────────────────────────────
-
-func TestBuildMetadata(t *testing.T) {
-	rec := &GrainRecording{
-		ID: "rec-1", Title: "Sprint Review", CreatedAt: "2025-06-01",
-		Duration: 3600.0, VideoURL: "https://cdn.grain.com/v.mp4",
-		ShareURL: "https://share.grain.com/rec-1",
-	}
-	meta := buildMetadata(rec, "https://grain.com/app/meetings/rec-1")
-
-	if meta.ID != "rec-1" {
-		t.Errorf("ID = %q", meta.ID)
-	}
-	if meta.Title != "Sprint Review" {
-		t.Errorf("Title = %q", meta.Title)
-	}
-	if meta.Links.Grain != "https://grain.com/app/meetings/rec-1" {
-		t.Errorf("Links.Grain = %q", meta.Links.Grain)
-	}
-	if meta.Links.Video != "https://cdn.grain.com/v.mp4" {
-		t.Errorf("Links.Video = %q", meta.Links.Video)
-	}
-}
+// ── minimalMetadata ─────────────────────────────────────────────────────────
 
 func TestMinimalMetadata(t *testing.T) {
 	meta := minimalMetadata("id-1", "Test", "https://grain.com/app/meetings/id-1")
@@ -336,6 +222,9 @@ func TestMinimalMetadata(t *testing.T) {
 	}
 	if meta.Date != "" || meta.DurationSeconds != nil {
 		t.Error("minimal should have no date/duration")
+	}
+	if meta.Links.Grain != "https://grain.com/app/meetings/id-1" {
+		t.Errorf("Links.Grain = %q", meta.Links.Grain)
 	}
 }
 

@@ -6,14 +6,18 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"text/tabwriter"
 	"time"
 )
 
+// validID matches alphanumeric IDs with hyphens and underscores.
+// Rejects path traversal (../) and URL-special chars (?, &, #, /).
+var validID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$`)
+
 type Exporter struct {
-	scraper      *Scraper
 	browser      *Browser
 	browserMu    sync.Mutex
 	cfg          *Config
@@ -23,13 +27,8 @@ type Exporter struct {
 }
 
 func NewExporter(cfg *Config) (*Exporter, error) {
-	scraper, err := NewScraper(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("scraper init: %w", err)
-	}
 	return &Exporter{
-		scraper: scraper,
-		cfg:     cfg,
+		cfg: cfg,
 		throttle: &Throttle{
 			Min: time.Duration(cfg.MinDelaySec * float64(time.Second)),
 			Max: time.Duration(cfg.MaxDelaySec * float64(time.Second)),
@@ -151,9 +150,9 @@ type indexedResult struct {
 }
 
 // exportParallel exports up to cfg.Parallel meetings concurrently.
-// Each worker independently calls exportOne (which makes its own API calls
-// and writes to per-meeting files). Results are collected via a channel
-// so that manifest updates happen in a single goroutine (no mutex needed).
+// Each worker independently calls exportOne (which writes to per-meeting files).
+// Results are collected via a channel so that manifest updates happen in a
+// single goroutine (no mutex needed).
 func (e *Exporter) exportParallel(ctx context.Context, meetings []MeetingRef) {
 	n := e.cfg.Parallel
 	total := len(meetings)
@@ -252,17 +251,6 @@ func (e *Exporter) runSingle(ctx context.Context) error {
 		URL: meetingURL(id),
 	}
 
-	// Try to enrich from API.
-	if e.cfg.Token != "" {
-		if rec, err := e.scraper.GetRecording(ctx, id, "text"); err == nil {
-			ref.Title = rec.GetTitle()
-			ref.Date = rec.GetDate()
-			ref.APIData = rec
-		} else {
-			slog.Warn("API fetch failed, continuing with ID only", "id", id, "error", err)
-		}
-	}
-
 	// Dry-run: show what would be exported and exit.
 	if e.cfg.DryRun {
 		e.printDryRun([]MeetingRef{ref})
@@ -327,20 +315,6 @@ func (e *Exporter) buildSearchFilter(ctx context.Context) error {
 // ── Discovery ───────────────────────────────────────────────────────────────
 
 func (e *Exporter) discover(ctx context.Context) ([]MeetingRef, error) {
-	if e.cfg.Token != "" {
-		slog.Debug("Validating API token")
-		if user, err := e.scraper.Me(ctx); err == nil {
-			slog.Info("API authenticated", "user", coalesce(user.Name, user.Email, "unknown"))
-			recs, err := e.scraper.ListRecordings(ctx)
-			if err == nil && len(recs) > 0 {
-				slog.Info("API recordings found", "count", len(recs))
-				return refsFromAPI(recs), nil
-			}
-			slog.Warn("API list failed, falling back to browser", "error", err)
-		} else {
-			slog.Warn("API auth failed, falling back to browser", "error", err)
-		}
-	}
 	return e.discoverViaBrowser(ctx)
 }
 
@@ -350,32 +324,15 @@ func (e *Exporter) discoverViaBrowser(ctx context.Context) ([]MeetingRef, error)
 	if err != nil {
 		return nil, err
 	}
-	cookies, err := b.Login(ctx)
-	if err != nil {
+	if _, err := b.Login(ctx); err != nil {
 		return nil, fmt.Errorf("login: %w", err)
 	}
-	e.scraper.InjectCookies(cookies)
 	meetings, err := b.DiscoverMeetings(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("discover: %w", err)
 	}
 	slog.Info("Browser discovery complete", "count", len(meetings))
 	return meetings, nil
-}
-
-func refsFromAPI(recs []GrainRecording) []MeetingRef {
-	refs := make([]MeetingRef, 0, len(recs))
-	for i := range recs {
-		r := &recs[i]
-		refs = append(refs, MeetingRef{
-			ID:      r.ID,
-			Title:   r.GetTitle(),
-			Date:    r.GetDate(),
-			URL:     meetingURL(r.ID),
-			APIData: r,
-		})
-	}
-	return refs
 }
 
 // ── Per-meeting Export ──────────────────────────────────────────────────────
@@ -400,32 +357,14 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 		return r
 	}
 
-	// PERF-1: Fetch recording once, reuse for metadata + text transcript.
-	// Only make additional API calls for vtt/json transcript formats.
-	rec := ref.APIData
-	if rec == nil && e.cfg.Token != "" {
-		if fetched, err := e.scraper.GetRecording(ctx, ref.ID, "text"); err == nil {
-			rec = fetched
-		}
-	}
-
-	e.writeHighlights(rec, ref.ID, base, r)
-	var meta *Metadata
-	if rec != nil {
-		meta = buildMetadata(rec, ref.URL)
-	} else {
-		meta = minimalMetadata(ref.ID, ref.Title, ref.URL)
+	meta := minimalMetadata(ref.ID, ref.Title, coalesce(ref.URL, meetingURL(ref.ID)))
+	if ref.Date != "" {
+		meta.Date = ref.Date
 	}
 
 	e.writeMetadata(meta, metaPath, r)
-	e.writeTranscripts(ctx, rec, ref.ID, base, r)
 	if e.cfg.OutputFormat != "" {
-		// Use the cached transcript text if available to avoid re-reading from disk.
-		var transcriptText string
-		if rec != nil {
-			transcriptText = rec.GetTranscript()
-		}
-		e.writeFormattedMarkdown(meta, transcriptText, base, r)
+		e.writeFormattedMarkdown(meta, "", base, r)
 	}
 	if !e.cfg.SkipVideo {
 		if e.cfg.AudioOnly {
@@ -448,81 +387,6 @@ func (e *Exporter) writeMetadata(meta *Metadata, path string, r *ExportResult) {
 	}
 	r.MetadataPath = e.relPath(path)
 	slog.Debug("Metadata written", "id", meta.ID)
-}
-
-func (e *Exporter) writeHighlights(rec *GrainRecording, id, base string, r *ExportResult) {
-	if rec == nil {
-		return
-	}
-	highlights := parseHighlights(rec.Highlights)
-	if len(highlights) == 0 {
-		return
-	}
-
-	clips := make([]HighlightClip, len(highlights))
-	for i, h := range highlights {
-		clips[i] = normalizeHighlight(h, i)
-	}
-
-	p := base + ".highlights.json"
-	if err := writeJSON(p, clips); err != nil {
-		slog.Error("Highlights write failed", "error", err, "id", id)
-		return
-	}
-	r.HighlightsPath = e.relPath(p)
-	slog.Info("Highlights exported", "id", id, "count", len(clips))
-}
-
-func (e *Exporter) writeTranscripts(ctx context.Context, rec *GrainRecording, id, base string, r *ExportResult) {
-	if e.cfg.Token == "" {
-		return
-	}
-
-	// Write text transcript from the already-fetched recording if available.
-	if rec != nil {
-		if text := rec.GetTranscript(); text != "" {
-			p := base + ".transcript.txt"
-			if writeFile(p, []byte(text)) == nil {
-				r.TranscriptPaths["text"] = e.relPath(p)
-				slog.Debug("Transcript written", "format", "text", "id", id, "source", "cached")
-			}
-		}
-	}
-
-	// Fetch remaining formats that require a separate API call.
-	for fk, ext := range map[string]string{"vtt": ".transcript.vtt", "json": ".transcript.json"} {
-		if err := ctx.Err(); err != nil {
-			return
-		}
-		// Also fetch text via API if the cached recording didn't have it.
-		if fk == "text" {
-			continue // handled above
-		}
-		text, err := e.scraper.GetTranscriptRaw(ctx, id, fk)
-		if err != nil || text == "" {
-			continue
-		}
-		p := base + ext
-		if writeFile(p, []byte(text)) == nil {
-			r.TranscriptPaths[fk] = e.relPath(p)
-			slog.Debug("Transcript written", "format", fk, "id", id)
-		}
-	}
-
-	// If text wasn't available from cache, try fetching it.
-	if _, ok := r.TranscriptPaths["text"]; !ok {
-		if err := ctx.Err(); err != nil {
-			return
-		}
-		text, err := e.scraper.GetTranscriptRaw(ctx, id, "text")
-		if err == nil && text != "" {
-			p := base + ".transcript.txt"
-			if writeFile(p, []byte(text)) == nil {
-				r.TranscriptPaths["text"] = e.relPath(p)
-				slog.Debug("Transcript written", "format", "text", "id", id)
-			}
-		}
-	}
 }
 
 func (e *Exporter) writeFormattedMarkdown(meta *Metadata, transcriptText, base string, r *ExportResult) {

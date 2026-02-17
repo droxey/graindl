@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -346,19 +344,8 @@ func TestRenderObsidianSpecialCharsInTitle(t *testing.T) {
 // ── Integration: exportOne with --output-format ─────────────────────────────
 
 func TestExportOneObsidianFormat(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(GrainRecording{
-			ID: "fmt-id", Title: "Formatted Meeting", CreatedAt: "2025-06-01T10:00:00Z",
-			Transcript:     "Hello world transcript",
-			TranscriptText: "Hello world transcript",
-			Duration:       float64(3600),
-		})
-	}))
-	defer ts.Close()
-
 	dir := t.TempDir()
 	cfg := &Config{
-		Token:        "tok",
 		OutputDir:    dir,
 		SkipVideo:    true,
 		OutputFormat: "obsidian",
@@ -369,18 +356,12 @@ func TestExportOneObsidianFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
-	e.scraper.baseURL = ts.URL
 
 	ref := MeetingRef{
 		ID:    "fmt-id",
 		Title: "Formatted Meeting",
 		Date:  "2025-06-01T10:00:00Z",
 		URL:   "https://grain.com/app/meetings/fmt-id",
-		APIData: &GrainRecording{
-			ID: "fmt-id", Title: "Formatted Meeting", CreatedAt: "2025-06-01T10:00:00Z",
-			Transcript: "Hello world transcript",
-			Duration:   float64(3600),
-		},
 	}
 
 	r := e.exportOne(context.Background(), ref)
@@ -412,9 +393,6 @@ func TestExportOneObsidianFormat(t *testing.T) {
 	if !strings.Contains(content, "aliases:") {
 		t.Error("Obsidian format should have aliases")
 	}
-	if !strings.Contains(content, "Hello world transcript") {
-		t.Error("should include transcript content")
-	}
 
 	// SEC-11: file should be 0o600.
 	info, _ := os.Stat(mdPath)
@@ -429,18 +407,8 @@ func TestExportOneObsidianFormat(t *testing.T) {
 }
 
 func TestExportOneNotionFormat(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(GrainRecording{
-			ID: "notion-id", Title: "Notion Meeting", CreatedAt: "2025-08-01T10:00:00Z",
-			Transcript:     "Notion transcript text",
-			TranscriptText: "Notion transcript text",
-		})
-	}))
-	defer ts.Close()
-
 	dir := t.TempDir()
 	cfg := &Config{
-		Token:        "tok",
 		OutputDir:    dir,
 		SkipVideo:    true,
 		OutputFormat: "notion",
@@ -451,17 +419,12 @@ func TestExportOneNotionFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
-	e.scraper.baseURL = ts.URL
 
 	ref := MeetingRef{
 		ID:    "notion-id",
 		Title: "Notion Meeting",
 		Date:  "2025-08-01T10:00:00Z",
 		URL:   "https://grain.com/app/meetings/notion-id",
-		APIData: &GrainRecording{
-			ID: "notion-id", Title: "Notion Meeting", CreatedAt: "2025-08-01T10:00:00Z",
-			Transcript: "Notion transcript text",
-		},
 	}
 
 	r := e.exportOne(context.Background(), ref)
@@ -514,18 +477,8 @@ func TestExportOneNoFormatNoMarkdown(t *testing.T) {
 }
 
 func TestRunSingleMeetingWithFormat(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(GrainRecording{
-			ID: "single-fmt", Title: "Single Formatted", CreatedAt: "2025-09-01T09:00:00Z",
-			Transcript:     "Transcript for single",
-			TranscriptText: "Transcript for single",
-		})
-	}))
-	defer ts.Close()
-
 	dir := t.TempDir()
 	cfg := &Config{
-		Token:        "tok",
 		OutputDir:    dir,
 		MeetingID:    "single-fmt",
 		SkipVideo:    true,
@@ -537,7 +490,6 @@ func TestRunSingleMeetingWithFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
-	e.scraper.baseURL = ts.URL
 	defer e.Close()
 
 	if err := e.Run(context.Background()); err != nil {
@@ -565,10 +517,7 @@ func TestRunSingleMeetingWithFormat(t *testing.T) {
 		t.Fatalf("read markdown: %v", err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "aliases:") {
-		t.Error("should have Obsidian aliases field")
-	}
-	if !strings.Contains(content, "Transcript for single") {
-		t.Error("should include transcript")
+	if !strings.Contains(content, "tags:") {
+		t.Error("should have Obsidian tags field")
 	}
 }

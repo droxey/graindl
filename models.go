@@ -14,8 +14,6 @@ import (
 // ── Config ──────────────────────────────────────────────────────────────────
 
 type Config struct {
-	Token         string
-	TokenFile     string
 	OutputDir     string
 	SessionDir    string
 	MaxMeetings   int
@@ -36,101 +34,13 @@ type Config struct {
 	WatchInterval time.Duration
 }
 
-// ── Grain API Types (GO-3) ──────────────────────────────────────────────────
-
-// GrainUser is the /me response.
-type GrainUser struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
-}
-
-// GrainRecording represents a single recording from the API.
-// Multiple field names handled via json tags + accessor methods
-// because the Grain API has returned different shapes historically.
-type GrainRecording struct {
-	ID                string `json:"id"`
-	Title             string `json:"title"`
-	Name              string `json:"name"`
-	CreatedAt         string `json:"created_at"`
-	StartTime         string `json:"start_time"`
-	Date              string `json:"date"`
-	Duration          any    `json:"duration"`
-	ShareURL          string `json:"share_url"`
-	PublicURL         string `json:"public_url"`
-	VideoURL          string `json:"video_url"`
-	Transcript        string `json:"transcript"`
-	TranscriptText    string `json:"transcript_text"`
-	Participants      any    `json:"participants"`
-	Attendees         any    `json:"attendees"`
-	Speakers          any    `json:"speakers"`
-	Tags              any    `json:"tags"`
-	Labels            any    `json:"labels"`
-	IntelligenceNotes any    `json:"intelligence_notes"`
-	Notes             any    `json:"notes"`
-	Highlights        any    `json:"highlights"`
-}
-
-func (r *GrainRecording) GetTitle() string {
-	return coalesce(r.Title, r.Name, "Untitled")
-}
-
-func (r *GrainRecording) GetDate() string {
-	return coalesce(r.CreatedAt, r.StartTime, r.Date)
-}
-
-func (r *GrainRecording) GetShareURL() string {
-	return coalesce(r.ShareURL, r.PublicURL)
-}
-
-func (r *GrainRecording) GetTranscript() string {
-	return coalesce(r.Transcript, r.TranscriptText)
-}
-
-func (r *GrainRecording) GetParticipants() any {
-	return firstNonNil(r.Participants, r.Attendees, r.Speakers)
-}
-
-func (r *GrainRecording) GetTags() any {
-	return firstNonNil(r.Tags, r.Labels)
-}
-
-func (r *GrainRecording) GetNotes() any {
-	return firstNonNil(r.IntelligenceNotes, r.Notes)
-}
-
-// RecordingsPage handles the paginated list response.
-// Custom unmarshal because the list key and cursor key vary.
-type RecordingsPage struct {
-	Recordings []GrainRecording
-	Cursor     string
-}
-
-func (p *RecordingsPage) UnmarshalJSON(data []byte) error {
-	var raw struct {
-		Recordings    []GrainRecording `json:"recordings"`
-		Data          []GrainRecording `json:"data"`
-		Items         []GrainRecording `json:"items"`
-		Cursor        string           `json:"cursor"`
-		NextCursor    string           `json:"next_cursor"`
-		NextCursorAlt string           `json:"nextCursor"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	p.Recordings = coalesceSlice(raw.Recordings, raw.Data, raw.Items)
-	p.Cursor = coalesce(raw.Cursor, raw.NextCursor, raw.NextCursorAlt)
-	return nil
-}
-
 // ── Export Types ─────────────────────────────────────────────────────────────
 
 type MeetingRef struct {
-	ID      string
-	Title   string
-	Date    string
-	URL     string
-	APIData *GrainRecording // typed, not map[string]any
+	ID    string
+	Title string
+	Date  string
+	URL   string
 }
 
 type ExportResult struct {
@@ -161,28 +71,28 @@ type ExportManifest struct {
 
 // ── Highlight Types ─────────────────────────────────────────────────────────
 
-// Highlight represents a single highlight/clip from the Grain API.
-// Multiple field names are supported because the API shape varies.
+// Highlight represents a single highlight/clip scraped from Grain.
+// Multiple field names are supported because the data shape varies.
 type Highlight struct {
-	ID        string  `json:"id"`
-	Title     string  `json:"title"`
-	Name      string  `json:"name"`
-	Text      string  `json:"text"`
-	Content   string  `json:"content"`
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Name       string `json:"name"`
+	Text       string `json:"text"`
+	Content    string `json:"content"`
 	Transcript string `json:"transcript"`
-	Timestamp any     `json:"timestamp"`
-	StartTime any     `json:"start_time"`
-	Start     any     `json:"start"`
-	EndTime   any     `json:"end_time"`
-	End       any     `json:"end"`
-	Duration  any     `json:"duration"`
-	Speaker   string  `json:"speaker"`
+	Timestamp  any    `json:"timestamp"`
+	StartTime  any    `json:"start_time"`
+	Start      any    `json:"start"`
+	EndTime    any    `json:"end_time"`
+	End        any    `json:"end"`
+	Duration   any    `json:"duration"`
+	Speaker    string `json:"speaker"`
 	SpeakerName string `json:"speaker_name"`
-	URL       string  `json:"url"`
-	ShareURL  string  `json:"share_url"`
-	Tags      any     `json:"tags"`
-	Labels    any     `json:"labels"`
-	CreatedAt string  `json:"created_at"`
+	URL        string `json:"url"`
+	ShareURL   string `json:"share_url"`
+	Tags       any    `json:"tags"`
+	Labels     any    `json:"labels"`
+	CreatedAt  string `json:"created_at"`
 }
 
 // HighlightClip is the normalized output format for an individual highlight.
@@ -199,7 +109,7 @@ type HighlightClip struct {
 	CreatedAt   string  `json:"created_at,omitempty"`
 }
 
-// parseHighlights extracts typed highlights from the raw API value.
+// parseHighlights extracts typed highlights from a raw value.
 // Handles: array of objects, single object, or wrapper like {"highlights":[...]}.
 func parseHighlights(v any) []Highlight {
 	if v == nil {
@@ -240,7 +150,7 @@ func parseHighlights(v any) []Highlight {
 	return nil
 }
 
-// normalizeHighlight converts a raw API Highlight into a clean HighlightClip.
+// normalizeHighlight converts a raw Highlight into a clean HighlightClip.
 func normalizeHighlight(h Highlight, index int) HighlightClip {
 	id := coalesce(h.ID, fmt.Sprintf("highlight-%d", index))
 	text := coalesce(h.Text, h.Content, h.Transcript)
@@ -315,24 +225,6 @@ type Links struct {
 	Grain string `json:"grain"`
 	Share string `json:"share,omitempty"`
 	Video string `json:"video,omitempty"`
-}
-
-func buildMetadata(rec *GrainRecording, pageURL string) *Metadata {
-	return &Metadata{
-		ID:              rec.ID,
-		Title:           rec.GetTitle(),
-		Date:            rec.GetDate(),
-		DurationSeconds: rec.Duration,
-		Participants:    rec.GetParticipants(),
-		Tags:            rec.GetTags(),
-		Links: Links{
-			Grain: pageURL,
-			Share: rec.GetShareURL(),
-			Video: rec.VideoURL,
-		},
-		AINotes:    rec.GetNotes(),
-		Highlights: rec.Highlights,
-	}
 }
 
 func minimalMetadata(id, title, pageURL string) *Metadata {
