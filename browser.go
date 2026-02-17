@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -336,7 +337,12 @@ func (b *Browser) resolveURL(videoURL, outputPath string) (string, string) {
 }
 
 func (b *Browser) fetchViaJS(videoURL, outputPath string) bool {
-	r := b.page.MustEval(fmt.Sprintf(`async () => { try { const r = await fetch(%q); if (!r.ok) return ''; const buf = await r.arrayBuffer(); const b = new Uint8Array(buf); let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s); } catch { return ''; } }`, videoURL))
+	// SEC: Use json.Marshal for correct JavaScript string escaping (not Go's %q).
+	urlJSON, err := json.Marshal(videoURL)
+	if err != nil {
+		return false
+	}
+	r := b.page.MustEval(fmt.Sprintf(`async () => { try { const r = await fetch(%s); if (!r.ok) return ''; const buf = await r.arrayBuffer(); const b = new Uint8Array(buf); let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s); } catch { return ''; } }`, urlJSON))
 	b64 := r.Str()
 	if len(b64) < 100 {
 		return false

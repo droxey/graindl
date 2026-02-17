@@ -409,7 +409,6 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 		}
 	}
 
-	e.writeMetadata(rec, ref, metaPath, r)
 	e.writeHighlights(rec, ref.ID, base, r)
 	var meta *Metadata
 	if rec != nil {
@@ -429,7 +428,12 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 		e.writeFormattedMarkdown(meta, transcriptText, base, r)
 	}
 	if !e.cfg.SkipVideo {
-		e.writeVideo(ctx, ref, videoPath, r)
+		if e.cfg.AudioOnly {
+			audioPath := base + ".m4a"
+			e.writeAudio(ctx, ref, audioPath, r)
+		} else {
+			e.writeVideo(ctx, ref, videoPath, r)
+		}
 	}
 	if r.Status == "" {
 		r.Status = "ok"

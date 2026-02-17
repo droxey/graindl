@@ -1084,8 +1084,6 @@ func TestParallelExportBasic(t *testing.T) {
 	cfg := &Config{
 		Token:       "tok",
 		OutputDir:   dir,
-		AudioOnly:   true,
-		SkipVideo:   false,
 		SkipVideo:   true,
 		Parallel:    3,
 		MinDelaySec: 0,
@@ -1096,47 +1094,6 @@ func TestParallelExportBasic(t *testing.T) {
 		t.Fatalf("NewExporter: %v", err)
 	}
 	e.scraper.baseURL = ts.URL
-
-	ref := MeetingRef{
-		ID:    "audio-id",
-		Title: "Audio Meeting",
-		Date:  "2025-06-01T10:00:00Z",
-		URL:   "https://grain.com/app/meetings/audio-id",
-		APIData: &GrainRecording{
-			ID: "audio-id", Title: "Audio Meeting", CreatedAt: "2025-06-01T10:00:00Z",
-			Transcript: "Audio transcript",
-		},
-	}
-
-	r := e.exportOne(context.Background(), ref)
-
-	// Should produce metadata and transcripts.
-	if r.MetadataPath == "" {
-		t.Error("expected metadata to be written")
-	}
-
-	// Video path should be empty — audio-only mode doesn't write video.
-	if r.VideoPath != "" {
-		t.Errorf("VideoPath should be empty in audio-only mode, got %q", r.VideoPath)
-	}
-	if r.VideoMethod != "" {
-		t.Errorf("VideoMethod should be empty in audio-only mode, got %q", r.VideoMethod)
-	}
-
-	// Audio extraction will fail without a real browser, but the metadata
-	// and transcripts should still succeed.
-	if r.Status != "ok" {
-		t.Errorf("status = %q, want ok", r.Status)
-	}
-}
-
-func TestExportOneAudioOnlyAndSkipVideoMutualExclusion(t *testing.T) {
-	// When both --audio-only and --skip-video are set, audio-only takes
-	// priority (it's the more specific flag). Verify no video file is written.
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(GrainRecording{
-			ID: "both-flags", Title: "Both Flags", CreatedAt: "2025-06-01",
-		})
 	defer e.Close()
 
 	if err := e.Run(context.Background()); err != nil {
@@ -1171,6 +1128,152 @@ func TestExportOneAudioOnlyAndSkipVideoMutualExclusion(t *testing.T) {
 		if meeting.Status != "ok" {
 			t.Errorf("manifest.Meetings[%d].Status = %q, want ok", i, meeting.Status)
 		}
+	}
+}
+
+// ── Audio-only export ────────────────────────────────────────────────────────
+
+func TestExportOneAudioOnlyMode(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(GrainRecording{
+			ID: "audio-id", Title: "Audio Meeting", CreatedAt: "2025-06-01T10:00:00Z",
+			Transcript: "Audio transcript",
+		})
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		AudioOnly:   true,
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+
+	ref := MeetingRef{
+		ID:    "audio-id",
+		Title: "Audio Meeting",
+		Date:  "2025-06-01T10:00:00Z",
+		URL:   "https://grain.com/app/meetings/audio-id",
+		APIData: &GrainRecording{
+			ID: "audio-id", Title: "Audio Meeting", CreatedAt: "2025-06-01T10:00:00Z",
+			Transcript: "Audio transcript",
+		},
+	}
+
+	r := e.exportOne(context.Background(), ref)
+
+	// Should produce metadata and transcripts.
+	if r.MetadataPath == "" {
+		t.Error("expected metadata to be written")
+	}
+
+	// Video path should be empty — audio-only mode with skip-video doesn't write video.
+	if r.VideoPath != "" {
+		t.Errorf("VideoPath should be empty in audio-only mode, got %q", r.VideoPath)
+	}
+	if r.VideoMethod != "" {
+		t.Errorf("VideoMethod should be empty in audio-only mode, got %q", r.VideoMethod)
+	}
+
+	// Audio extraction will fail without a real browser, but the metadata
+	// and transcripts should still succeed.
+	if r.Status != "ok" {
+		t.Errorf("status = %q, want ok", r.Status)
+	}
+}
+
+func TestExportOneAudioOnlyAndSkipVideoMutualExclusion(t *testing.T) {
+	// When both --audio-only and --skip-video are set, skip-video takes
+	// precedence: no media is downloaded at all.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(GrainRecording{
+			ID: "both-flags", Title: "Both Flags", CreatedAt: "2025-06-01",
+		})
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		AudioOnly:   true,
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+
+	ref := MeetingRef{
+		ID: "both-flags", Title: "Both Flags", Date: "2025-06-01",
+		APIData: &GrainRecording{ID: "both-flags", Title: "Both Flags"},
+	}
+
+	r := e.exportOne(context.Background(), ref)
+	if r.VideoPath != "" {
+		t.Errorf("VideoPath should be empty, got %q", r.VideoPath)
+	}
+}
+
+func TestRunSingleMeetingAudioOnly(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(GrainRecording{
+			ID: "audio-single", Title: "Audio Single", CreatedAt: "2025-08-10T09:00:00Z",
+			Transcript: "This is the transcript",
+		})
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		MeetingID:   "audio-single",
+		AudioOnly:   true,
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+	defer e.Close()
+
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run with --id --audio-only: %v", err)
+	}
+
+	manifestPath := filepath.Join(dir, "_export-manifest.json")
+	if !fileExists(manifestPath) {
+		t.Fatal("manifest missing")
+	}
+	raw, _ := os.ReadFile(manifestPath)
+	var m ExportManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if m.Total != 1 {
+		t.Errorf("manifest.Total = %d, want 1", m.Total)
+	}
+	if m.OK != 1 {
+		t.Errorf("manifest.OK = %d, want 1", m.OK)
+	}
+	// Video should not be present.
+	if m.Meetings[0].VideoPath != "" {
+		t.Errorf("VideoPath should be empty in audio-only mode, got %q", m.Meetings[0].VideoPath)
 	}
 }
 
@@ -1247,7 +1350,6 @@ func TestParallelExportSkipsExisting(t *testing.T) {
 	cfg := &Config{
 		Token:       "tok",
 		OutputDir:   dir,
-		AudioOnly:   true,
 		SkipVideo:   true,
 		Parallel:    2,
 		Overwrite:   false,
@@ -1259,24 +1361,6 @@ func TestParallelExportSkipsExisting(t *testing.T) {
 		t.Fatalf("NewExporter: %v", err)
 	}
 	e.scraper.baseURL = ts.URL
-
-	ref := MeetingRef{
-		ID: "both-flags", Title: "Both Flags", Date: "2025-06-01",
-		APIData: &GrainRecording{ID: "both-flags", Title: "Both Flags"},
-	}
-
-	r := e.exportOne(context.Background(), ref)
-	if r.VideoPath != "" {
-		t.Errorf("VideoPath should be empty, got %q", r.VideoPath)
-	}
-}
-
-func TestRunSingleMeetingAudioOnly(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(GrainRecording{
-			ID: "audio-single", Title: "Audio Single", CreatedAt: "2025-08-10T09:00:00Z",
-			Transcript: "This is the transcript",
-		})
 	defer e.Close()
 
 	// Pre-create the first meeting's metadata file.
@@ -1320,8 +1404,6 @@ func TestParallelExportCancellation(t *testing.T) {
 	cfg := &Config{
 		Token:       "tok",
 		OutputDir:   dir,
-		MeetingID:   "audio-single",
-		AudioOnly:   true,
 		SkipVideo:   true,
 		Parallel:    2,
 		MinDelaySec: 0,
@@ -1334,28 +1416,6 @@ func TestParallelExportCancellation(t *testing.T) {
 	e.scraper.baseURL = ts.URL
 	defer e.Close()
 
-	if err := e.Run(context.Background()); err != nil {
-		t.Fatalf("Run with --id --audio-only: %v", err)
-	}
-
-	manifestPath := filepath.Join(dir, "_export-manifest.json")
-	if !fileExists(manifestPath) {
-		t.Fatal("manifest missing")
-	}
-	raw, _ := os.ReadFile(manifestPath)
-	var m ExportManifest
-	if err := json.Unmarshal(raw, &m); err != nil {
-		t.Fatalf("unmarshal manifest: %v", err)
-	}
-	if m.Total != 1 {
-		t.Errorf("manifest.Total = %d, want 1", m.Total)
-	}
-	if m.OK != 1 {
-		t.Errorf("manifest.OK = %d, want 1", m.OK)
-	}
-	// Video should not be present.
-	if m.Meetings[0].VideoPath != "" {
-		t.Errorf("VideoPath should be empty in audio-only mode, got %q", m.Meetings[0].VideoPath)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately.
 

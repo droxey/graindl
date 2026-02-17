@@ -20,8 +20,10 @@ type Config struct {
 	SessionDir    string
 	MaxMeetings   int
 	MeetingID     string
+	Parallel      int
 	DryRun        bool
 	SkipVideo     bool
+	AudioOnly     bool
 	Overwrite     bool
 	Headless      bool
 	CleanSession  bool
@@ -29,26 +31,9 @@ type Config struct {
 	MinDelaySec   float64
 	MaxDelaySec   float64
 	SearchQuery   string
+	OutputFormat  string // "", "obsidian", "notion"
 	Watch         bool
 	WatchInterval time.Duration
-	Token        string
-	TokenFile    string
-	OutputDir    string
-	SessionDir   string
-	MaxMeetings  int
-	MeetingID    string
-	Parallel     int
-	DryRun       bool
-	SkipVideo    bool
-	AudioOnly    bool
-	Overwrite    bool
-	Headless     bool
-	CleanSession bool
-	Verbose      bool
-	MinDelaySec  float64
-	MaxDelaySec  float64
-	SearchQuery  string
-	OutputFormat string // "", "obsidian", "notion"
 }
 
 // ── Grain API Types (GO-3) ──────────────────────────────────────────────────
