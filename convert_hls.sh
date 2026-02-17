@@ -20,10 +20,14 @@
 #   -h, --help       Show this help message
 #
 # Requirements:
+#   - bash 4.3+ (uses mapfile and wait -n)
 #   - ffmpeg (with HLS/TLS support)
 #   - jq (for JSON parsing)
 #
 set -euo pipefail
+
+# Match Go-side 0o600 permissions for all files created by this script.
+umask 077
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
@@ -45,8 +49,9 @@ usage() {
 }
 
 check_deps() {
-    command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg is required but not found in PATH"
-    command -v jq     >/dev/null 2>&1 || die "jq is required but not found in PATH"
+    command -v ffmpeg  >/dev/null 2>&1 || die "ffmpeg is required but not found in PATH"
+    command -v ffprobe >/dev/null 2>&1 || die "ffprobe is required but not found in PATH (ships with ffmpeg)"
+    command -v jq      >/dev/null 2>&1 || die "jq is required but not found in PATH"
 }
 
 # ── Argument Parsing ──────────────────────────────────────────────────────────
@@ -67,6 +72,8 @@ OUTPUT_DIR="${OUTPUT_DIR:-./recordings}"
 MANIFEST="${OUTPUT_DIR}/_export-manifest.json"
 
 # ── Validation ────────────────────────────────────────────────────────────────
+
+[[ "$JOBS" =~ ^[0-9]+$ && "$JOBS" -gt 0 ]] || die "--jobs must be a positive integer (got: ${JOBS})"
 
 check_deps
 
@@ -95,6 +102,13 @@ SKIPPED=0
 CONVERTED_IDS=()
 PIDS=()
 RESULTS_DIR=$(mktemp -d)
+MANIFEST_TMP=""
+
+cleanup() {
+    [[ -n "$RESULTS_DIR" && -d "$RESULTS_DIR" ]] && rm -rf "$RESULTS_DIR"
+    [[ -n "$MANIFEST_TMP" && -f "$MANIFEST_TMP" ]] && rm -f "$MANIFEST_TMP"
+}
+trap cleanup EXIT
 
 convert_one() {
     local id="$1" url_file="$2" result_file="$3"
@@ -135,24 +149,35 @@ convert_one() {
 
     info "[${id}] Converting HLS -> MP4 ..."
 
-    local ffmpeg_args=(
-        -y
-        -i "$hls_url"
-        -c copy
-        -movflags +faststart
-        -bsf:a aac_adtstoasc
-    )
-
     local log_level="warning"
     if [[ "$QUIET" -eq 1 ]]; then
         log_level="error"
     fi
 
-    if ffmpeg -loglevel "$log_level" "${ffmpeg_args[@]}" "$mp4_path" </dev/null; then
+    # Probe whether the stream contains AAC audio; apply the ADTS-to-ASC
+    # bitstream filter only when needed (it errors on non-AAC streams).
+    local bsf_args=()
+    if ffprobe -loglevel error -select_streams a:0 -show_entries stream=codec_name \
+         -of csv=p=0 "$hls_url" 2>/dev/null | grep -q '^aac$'; then
+        bsf_args=(-bsf:a aac_adtstoasc)
+    fi
+
+    local ffmpeg_args=(
+        -y
+        -i "$hls_url"
+        -c copy
+        -movflags +faststart
+        "${bsf_args[@]}"
+    )
+
+    local rc=0
+    ffmpeg -loglevel "$log_level" "${ffmpeg_args[@]}" "$mp4_path" </dev/null || rc=$?
+
+    if [[ "$rc" -eq 0 ]]; then
         info "[${id}] OK: ${mp4_path}"
         echo "converted" > "$result_file"
     else
-        warn "[${id}] ffmpeg failed (exit $?)"
+        warn "[${id}] ffmpeg failed (exit ${rc})"
         # Clean up partial file
         rm -f "$mp4_path"
         echo "failed" > "$result_file"
@@ -206,13 +231,13 @@ fi
 # ── Tally results ────────────────────────────────────────────────────────────
 
 for entry in "${PENDING[@]}"; do
-    local_id=$(cut -f1 <<< "$entry")
-    result_file="${RESULTS_DIR}/${local_id}"
+    entry_id=$(cut -f1 <<< "$entry")
+    result_file="${RESULTS_DIR}/${entry_id}"
     if [[ -f "$result_file" ]]; then
         case $(< "$result_file") in
             converted)
                 CONVERTED=$((CONVERTED + 1))
-                CONVERTED_IDS+=("$local_id")
+                CONVERTED_IDS+=("$entry_id")
                 ;;
             failed)  FAILED=$((FAILED + 1))  ;;
             skipped) SKIPPED=$((SKIPPED + 1)) ;;
@@ -221,8 +246,6 @@ for entry in "${PENDING[@]}"; do
         FAILED=$((FAILED + 1))
     fi
 done
-
-rm -rf "$RESULTS_DIR"
 
 # ── Update manifest ──────────────────────────────────────────────────────────
 
@@ -234,7 +257,7 @@ if [[ "$CONVERTED" -gt 0 && "$DRY_RUN" -eq 0 ]]; then
     #   - status "hls_pending" -> "ok"
     #   - video_path .m3u8.url -> .mp4
     #   - decrement hls_pending counter
-    TMP="${MANIFEST}.tmp"
+    MANIFEST_TMP="${MANIFEST}.tmp"
     jq --argjson ids "$IDS_JSON" '
         ($ids | map({(.): true}) | add) as $set |
         .hls_pending = ([.hls_pending - ($ids | length), 0] | max) |
@@ -244,7 +267,8 @@ if [[ "$CONVERTED" -gt 0 && "$DRY_RUN" -eq 0 ]]; then
                 .video_path = (.video_path | sub("\\.m3u8\\.url$"; ".mp4"))
             else . end
         ]
-    ' "$MANIFEST" > "$TMP" && mv "$TMP" "$MANIFEST"
+    ' "$MANIFEST" > "$MANIFEST_TMP" && mv "$MANIFEST_TMP" "$MANIFEST"
+    MANIFEST_TMP=""  # clear so trap doesn't remove the renamed file
 
     info "Updated manifest: ${MANIFEST}"
 fi
