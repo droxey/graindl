@@ -323,6 +323,7 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 	}
 
 	e.writeMetadata(rec, ref, metaPath, r)
+	e.writeHighlights(rec, ref.ID, base, r)
 	e.writeTranscripts(ctx, rec, ref.ID, base, r)
 	if !e.cfg.SkipVideo {
 		e.writeVideo(ctx, ref, videoPath, r)
@@ -346,6 +347,29 @@ func (e *Exporter) writeMetadata(rec *GrainRecording, ref MeetingRef, path strin
 	}
 	r.MetadataPath = e.relPath(path)
 	slog.Debug("Metadata written", "id", ref.ID)
+}
+
+func (e *Exporter) writeHighlights(rec *GrainRecording, id, base string, r *ExportResult) {
+	if rec == nil {
+		return
+	}
+	highlights := parseHighlights(rec.Highlights)
+	if len(highlights) == 0 {
+		return
+	}
+
+	clips := make([]HighlightClip, len(highlights))
+	for i, h := range highlights {
+		clips[i] = normalizeHighlight(h, i)
+	}
+
+	p := base + ".highlights.json"
+	if err := writeJSON(p, clips); err != nil {
+		slog.Error("Highlights write failed", "error", err, "id", id)
+		return
+	}
+	r.HighlightsPath = e.relPath(p)
+	slog.Info("Highlights exported", "id", id, "count", len(clips))
 }
 
 func (e *Exporter) writeTranscripts(ctx context.Context, rec *GrainRecording, id, base string, r *ExportResult) {

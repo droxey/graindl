@@ -138,6 +138,175 @@ func TestExportOneWithAPI(t *testing.T) {
 	}
 }
 
+func TestExportOneWithHighlights(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(GrainRecording{
+			ID: "hl-test", Title: "Highlight Meeting", CreatedAt: "2025-06-01T10:00:00Z",
+			Transcript: "Full transcript text",
+			Highlights: []any{
+				map[string]any{
+					"id": "h1", "text": "Key insight about architecture",
+					"speaker": "Alice", "start_time": 120.5, "end_time": 145.0,
+					"url": "https://grain.com/highlight/h1",
+				},
+				map[string]any{
+					"id": "h2", "text": "Action item: review PR",
+					"speaker_name": "Bob", "timestamp": 300.0, "duration": 20.0,
+					"tags": []any{"action-item"},
+				},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+
+	ref := MeetingRef{
+		ID:    "hl-test",
+		Title: "Highlight Meeting",
+		Date:  "2025-06-01T10:00:00Z",
+		URL:   "https://grain.com/app/meetings/hl-test",
+		APIData: &GrainRecording{
+			ID: "hl-test", Title: "Highlight Meeting", CreatedAt: "2025-06-01T10:00:00Z",
+			Highlights: []any{
+				map[string]any{
+					"id": "h1", "text": "Key insight about architecture",
+					"speaker": "Alice", "start_time": 120.5, "end_time": 145.0,
+					"url": "https://grain.com/highlight/h1",
+				},
+				map[string]any{
+					"id": "h2", "text": "Action item: review PR",
+					"speaker_name": "Bob", "timestamp": 300.0, "duration": 20.0,
+					"tags": []any{"action-item"},
+				},
+			},
+		},
+	}
+
+	r := e.exportOne(context.Background(), ref)
+
+	if r.Status != "ok" {
+		t.Errorf("status = %q, want ok (error: %s)", r.Status, r.ErrorMsg)
+	}
+
+	// Highlights file should exist.
+	if r.HighlightsPath == "" {
+		t.Fatal("HighlightsPath is empty")
+	}
+	hlPath := filepath.Join(dir, r.HighlightsPath)
+	if !fileExists(hlPath) {
+		t.Fatalf("highlights file missing: %s", hlPath)
+	}
+
+	// SEC-8: path should be relative.
+	if filepath.IsAbs(r.HighlightsPath) {
+		t.Errorf("HighlightsPath should be relative, got %q", r.HighlightsPath)
+	}
+
+	// SEC-11: file should be 0o600.
+	info, _ := os.Stat(hlPath)
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("highlights perms = %04o, want 0600", info.Mode().Perm())
+	}
+
+	// Verify content.
+	raw, _ := os.ReadFile(hlPath)
+	var clips []HighlightClip
+	if err := json.Unmarshal(raw, &clips); err != nil {
+		t.Fatalf("highlights unmarshal: %v", err)
+	}
+	if len(clips) != 2 {
+		t.Fatalf("expected 2 clips, got %d", len(clips))
+	}
+
+	// First clip: direct fields.
+	if clips[0].ID != "h1" {
+		t.Errorf("clips[0].ID = %q", clips[0].ID)
+	}
+	if clips[0].Text != "Key insight about architecture" {
+		t.Errorf("clips[0].Text = %q", clips[0].Text)
+	}
+	if clips[0].Speaker != "Alice" {
+		t.Errorf("clips[0].Speaker = %q", clips[0].Speaker)
+	}
+	if clips[0].StartSec != 120.5 {
+		t.Errorf("clips[0].StartSec = %f", clips[0].StartSec)
+	}
+	if clips[0].EndSec != 145.0 {
+		t.Errorf("clips[0].EndSec = %f", clips[0].EndSec)
+	}
+	if clips[0].DurationSec != 24.5 {
+		t.Errorf("clips[0].DurationSec = %f, want 24.5 (inferred)", clips[0].DurationSec)
+	}
+
+	// Second clip: fallback fields.
+	if clips[1].ID != "h2" {
+		t.Errorf("clips[1].ID = %q", clips[1].ID)
+	}
+	if clips[1].Speaker != "Bob" {
+		t.Errorf("clips[1].Speaker = %q, want SpeakerName fallback", clips[1].Speaker)
+	}
+	if clips[1].StartSec != 300.0 {
+		t.Errorf("clips[1].StartSec = %f", clips[1].StartSec)
+	}
+	if clips[1].DurationSec != 20.0 {
+		t.Errorf("clips[1].DurationSec = %f", clips[1].DurationSec)
+	}
+	if clips[1].EndSec != 320.0 {
+		t.Errorf("clips[1].EndSec = %f, want 320.0 (inferred)", clips[1].EndSec)
+	}
+}
+
+func TestExportOneNoHighlights(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(GrainRecording{
+			ID: "no-hl", Title: "No Highlights", CreatedAt: "2025-06-01",
+		})
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := &Config{
+		Token:       "tok",
+		OutputDir:   dir,
+		SkipVideo:   true,
+		MinDelaySec: 0,
+		MaxDelaySec: 0.01,
+	}
+	e, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	e.scraper.baseURL = ts.URL
+
+	ref := MeetingRef{
+		ID: "no-hl", Title: "No Highlights", Date: "2025-06-01",
+		URL:     "https://grain.com/app/meetings/no-hl",
+		APIData: &GrainRecording{ID: "no-hl", Title: "No Highlights"},
+	}
+
+	r := e.exportOne(context.Background(), ref)
+	if r.Status != "ok" {
+		t.Errorf("status = %q, want ok", r.Status)
+	}
+	// No highlights file should be written.
+	if r.HighlightsPath != "" {
+		t.Errorf("HighlightsPath should be empty for meeting without highlights, got %q", r.HighlightsPath)
+	}
+}
+
 func TestExportOneSkipExisting(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{
