@@ -38,6 +38,11 @@ func (e *Exporter) Run(ctx context.Context) error {
 		return fmt.Errorf("output dir: %w", err)
 	}
 
+	// Single meeting mode: --id skips discovery entirely.
+	if e.cfg.MeetingID != "" {
+		return e.runSingle(ctx)
+	}
+
 	// Search filter: if --search is set, resolve matching IDs before discovery.
 	if e.cfg.SearchQuery != "" {
 		if err := e.buildSearchFilter(ctx); err != nil {
@@ -122,6 +127,60 @@ func (e *Exporter) Close() {
 	if e.browser != nil {
 		e.browser.Close()
 	}
+}
+
+// runSingle exports a single meeting by ID, skipping discovery.
+func (e *Exporter) runSingle(ctx context.Context) error {
+	id := e.cfg.MeetingID
+	if !validID.MatchString(id) {
+		return fmt.Errorf("invalid meeting ID: %q", id)
+	}
+
+	slog.Info("Single meeting export", "id", id)
+
+	ref := MeetingRef{
+		ID:  id,
+		URL: meetingURL(id),
+	}
+
+	// Try to enrich from API.
+	if e.cfg.Token != "" {
+		if rec, err := e.scraper.GetRecording(ctx, id, "text"); err == nil {
+			ref.Title = rec.GetTitle()
+			ref.Date = rec.GetDate()
+			ref.APIData = rec
+		} else {
+			slog.Warn("API fetch failed, continuing with ID only", "id", id, "error", err)
+		}
+	}
+
+	e.manifest.Total = 1
+	slog.Info(fmt.Sprintf("[1/1] %s", coalesce(ref.Title, ref.ID)))
+	r := e.exportOne(ctx, ref)
+	e.manifest.Meetings = append(e.manifest.Meetings, r)
+
+	switch r.Status {
+	case "ok":
+		e.manifest.OK++
+	case "skipped":
+		e.manifest.Skipped++
+	case "hls_pending":
+		e.manifest.HLSPending++
+		e.manifest.OK++
+	default:
+		e.manifest.Errors++
+	}
+
+	if err := writeJSON(filepath.Join(e.cfg.OutputDir, "_export-manifest.json"), e.manifest); err != nil {
+		slog.Error("Manifest write failed", "error", err)
+	}
+
+	slog.Info("Done",
+		"ok", e.manifest.OK,
+		"skipped", e.manifest.Skipped,
+		"errors", e.manifest.Errors,
+	)
+	return nil
 }
 
 // buildSearchFilter runs a Grain search and populates the filter map.

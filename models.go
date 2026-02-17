@@ -17,6 +17,7 @@ type Config struct {
 	OutputDir    string
 	SessionDir   string
 	MaxMeetings  int
+	MeetingID    string
 	SkipVideo    bool
 	Overwrite    bool
 	Headless     bool
