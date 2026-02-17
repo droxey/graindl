@@ -9,6 +9,10 @@ chromium-profile/
 *.mp4
 *.mp3
 
+# Test coverage
+coverage.out
+coverage.html
+
 # OS
 .DS_Store
 Thumbs.db
