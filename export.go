@@ -204,6 +204,17 @@ func (e *Exporter) exportParallel(ctx context.Context, meetings []MeetingRef) {
 			e.manifest.Errors++
 		}
 	}
+
+	// Compact: remove nil slots left by meetings that were never dispatched
+	// (e.g. context cancelled mid-dispatch). Keeps manifest consistent with
+	// the sequential path which uses append.
+	compacted := make([]*ExportResult, 0, len(e.manifest.Meetings))
+	for _, r := range e.manifest.Meetings {
+		if r != nil {
+			compacted = append(compacted, r)
+		}
+	}
+	e.manifest.Meetings = compacted
 }
 
 // printDryRun lists the meetings that would be exported without doing it.

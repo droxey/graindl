@@ -1106,6 +1106,13 @@ func TestParallelExportCancellation(t *testing.T) {
 
 	// Should not panic or hang.
 	_ = e.Run(ctx)
+
+	// Manifest should have no nil entries (compaction removes undispatched slots).
+	for i, m := range e.manifest.Meetings {
+		if m == nil {
+			t.Errorf("manifest.Meetings[%d] is nil after cancellation", i)
+		}
+	}
 }
 
 func TestParallelExportWithMaxMeetings(t *testing.T) {
