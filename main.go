@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var (
@@ -87,6 +88,7 @@ func main() {
 
 	var cfg Config
 	showVersion := false
+	intervalStr := coalesce(envGet(dotenv, "GRAIN_WATCH_INTERVAL"), "30m")
 
 	flag.StringVar(&cfg.Token, "token", envGet(dotenv, "GRAIN_API_TOKEN"), "Grain API token (visible in ps — prefer --token-file)")
 	flag.StringVar(&cfg.TokenFile, "token-file", envGet(dotenv, "GRAIN_TOKEN_FILE"), "Path to file containing API token")
@@ -105,6 +107,8 @@ func main() {
 	flag.Float64Var(&cfg.MaxDelaySec, "max-delay", envFloat(dotenv, "GRAIN_MAX_DELAY", 6.0), "Max delay (seconds)")
 	flag.IntVar(&cfg.Parallel, "parallel", envInt(dotenv, "GRAIN_PARALLEL", 1), "Number of meetings to export concurrently")
 	flag.StringVar(&cfg.SearchQuery, "search", envGet(dotenv, "GRAIN_SEARCH"), "Search query to filter meetings")
+	flag.BoolVar(&cfg.Watch, "watch", envBool(dotenv, "GRAIN_WATCH"), "Run continuously, polling for new meetings")
+	flag.StringVar(&intervalStr, "interval", intervalStr, "Polling interval for watch mode (e.g. 5m, 30m, 1h)")
 	flag.StringVar(&cfg.OutputFormat, "output-format", envGet(dotenv, "GRAIN_OUTPUT_FORMAT"), "Export format: obsidian, notion (adds frontmatter markdown)")
 	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
 	flag.Parse()
@@ -143,6 +147,28 @@ func main() {
 		cfg.MaxDelaySec = cfg.MinDelaySec + 1
 	}
 
+	// Watch mode: parse interval and validate flag combinations.
+	if cfg.Watch {
+		dur, err := time.ParseDuration(intervalStr)
+		if err != nil {
+			slog.Error("Invalid --interval value", "value", intervalStr, "error", err)
+			os.Exit(1)
+		}
+		if dur < 1*time.Minute {
+			slog.Error("--interval must be at least 1m", "value", dur)
+			os.Exit(1)
+		}
+		cfg.WatchInterval = dur
+		if cfg.MeetingID != "" {
+			slog.Error("--watch cannot be used with --id")
+			os.Exit(1)
+		}
+		if cfg.DryRun {
+			slog.Error("--watch cannot be used with --dry-run")
+			os.Exit(1)
+		}
+		if cfg.Overwrite {
+			slog.Error("--watch cannot be used with --overwrite (would re-export every meeting every cycle)")
 	if cfg.OutputFormat != "" {
 		cfg.OutputFormat = strings.ToLower(cfg.OutputFormat)
 		if cfg.OutputFormat != "obsidian" && cfg.OutputFormat != "notion" {
@@ -171,6 +197,8 @@ func main() {
 	} else if cfg.SkipVideo {
 		slog.Info("Video: skipped")
 	}
+	if cfg.Watch {
+		slog.Info(fmt.Sprintf("Watch: polling every %s (Ctrl-C to stop)", cfg.WatchInterval))
 	if cfg.OutputFormat != "" {
 		slog.Info(fmt.Sprintf("Format: %s", cfg.OutputFormat))
 	}
@@ -185,8 +213,15 @@ func main() {
 	}
 	defer exp.Close()
 
-	if err := exp.Run(ctx); err != nil {
-		slog.Error("Fatal", "error", err)
-		os.Exit(1)
+	if cfg.Watch {
+		if err := exp.RunWatch(ctx); err != nil {
+			slog.Error("Fatal", "error", err)
+			os.Exit(1)
+		}
+	} else {
+		if err := exp.Run(ctx); err != nil {
+			slog.Error("Fatal", "error", err)
+			os.Exit(1)
+		}
 	}
 }
