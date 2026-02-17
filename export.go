@@ -4,15 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
-	"text/tabwriter"
 	"os"
+	"path/filepath"
+	"sync"
+	"text/tabwriter"
 	"time"
 )
 
 type Exporter struct {
 	scraper      *Scraper
 	browser      *Browser
+	browserMu    sync.Mutex
 	cfg          *Config
 	throttle     *Throttle
 	manifest     *ExportManifest
@@ -92,6 +94,29 @@ func (e *Exporter) Run(ctx context.Context) error {
 	slog.Info("Exporting meetings", "count", len(meetings), "output", absPath(e.cfg.OutputDir))
 	e.manifest.Total = len(meetings)
 
+	if e.cfg.Parallel > 1 {
+		e.exportParallel(ctx, meetings)
+	} else {
+		e.exportSequential(ctx, meetings)
+	}
+
+	if err := writeJSON(filepath.Join(e.cfg.OutputDir, "_export-manifest.json"), e.manifest); err != nil {
+		slog.Error("Manifest write failed", "error", err)
+	}
+	slog.Info("Done",
+		"ok", e.manifest.OK,
+		"skipped", e.manifest.Skipped,
+		"errors", e.manifest.Errors,
+		"hls_pending", e.manifest.HLSPending,
+	)
+	if e.manifest.HLSPending > 0 {
+		fmt.Println("  Run ./convert_hls.sh to convert HLS streams to MP4")
+	}
+	return nil
+}
+
+// exportSequential exports meetings one at a time (the default).
+func (e *Exporter) exportSequential(ctx context.Context, meetings []MeetingRef) {
 	for i, m := range meetings {
 		if err := ctx.Err(); err != nil {
 			slog.Warn("Cancelled", "completed", i, "total", len(meetings))
@@ -115,20 +140,81 @@ func (e *Exporter) Run(ctx context.Context) error {
 			_ = e.throttle.Wait(ctx)
 		}
 	}
+}
 
-	if err := writeJSON(filepath.Join(e.cfg.OutputDir, "_export-manifest.json"), e.manifest); err != nil {
-		slog.Error("Manifest write failed", "error", err)
+// indexedResult pairs an export result with its original index so the
+// manifest stays ordered even when meetings finish out of order.
+type indexedResult struct {
+	index  int
+	result *ExportResult
+}
+
+// exportParallel exports up to cfg.Parallel meetings concurrently.
+// Each worker independently calls exportOne (which makes its own API calls
+// and writes to per-meeting files). Results are collected via a channel
+// so that manifest updates happen in a single goroutine (no mutex needed).
+func (e *Exporter) exportParallel(ctx context.Context, meetings []MeetingRef) {
+	n := e.cfg.Parallel
+	total := len(meetings)
+
+	// Pre-allocate manifest slots so results can be placed by index.
+	e.manifest.Meetings = make([]*ExportResult, total)
+
+	sem := make(chan struct{}, n)
+	results := make(chan indexedResult, n)
+
+	var wg sync.WaitGroup
+
+	// Producer: dispatch meetings to workers, limited by semaphore.
+	go func() {
+		for i, m := range meetings {
+			if err := ctx.Err(); err != nil {
+				break
+			}
+
+			sem <- struct{}{} // acquire slot (blocks when N workers are active)
+			wg.Add(1)
+
+			go func(idx int, ref MeetingRef) {
+				defer wg.Done()
+				defer func() { <-sem }() // release slot
+
+				slog.Info(fmt.Sprintf("[%d/%d] %s", idx+1, total, coalesce(ref.Title, ref.ID)))
+				r := e.exportOne(ctx, ref)
+				results <- indexedResult{index: idx, result: r}
+			}(i, m)
+		}
+
+		wg.Wait()
+		close(results)
+	}()
+
+	// Consumer: collect results in the main goroutine (single-writer).
+	for ir := range results {
+		e.manifest.Meetings[ir.index] = ir.result
+		switch ir.result.Status {
+		case "ok":
+			e.manifest.OK++
+		case "skipped":
+			e.manifest.Skipped++
+		case "hls_pending":
+			e.manifest.HLSPending++
+			e.manifest.OK++
+		default:
+			e.manifest.Errors++
+		}
 	}
-	slog.Info("Done",
-		"ok", e.manifest.OK,
-		"skipped", e.manifest.Skipped,
-		"errors", e.manifest.Errors,
-		"hls_pending", e.manifest.HLSPending,
-	)
-	if e.manifest.HLSPending > 0 {
-		fmt.Println("  Run ./convert_hls.sh to convert HLS streams to MP4")
+
+	// Compact: remove nil slots left by meetings that were never dispatched
+	// (e.g. context cancelled mid-dispatch). Keeps manifest consistent with
+	// the sequential path which uses append.
+	compacted := make([]*ExportResult, 0, len(e.manifest.Meetings))
+	for _, r := range e.manifest.Meetings {
+		if r != nil {
+			compacted = append(compacted, r)
+		}
 	}
-	return nil
+	e.manifest.Meetings = compacted
 }
 
 // printDryRun lists the meetings that would be exported without doing it.
@@ -434,6 +520,8 @@ func (e *Exporter) relPath(abs string) string {
 }
 
 func (e *Exporter) lazyBrowser() (*Browser, error) {
+	e.browserMu.Lock()
+	defer e.browserMu.Unlock()
 	if e.browser != nil {
 		return e.browser, nil
 	}
