@@ -152,8 +152,7 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("Audio: extracting audio only (ffmpeg)")
-	}
-	if cfg.SkipVideo {
+	} else if cfg.SkipVideo {
 		slog.Info("Video: skipped")
 	}
 
