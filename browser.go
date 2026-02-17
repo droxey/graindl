@@ -359,3 +359,235 @@ func (b *Browser) pressEscape() {
 		b.page.KeyActions().Press(input.Escape).MustDo()
 	})
 }
+
+// ── Meeting Page Scraping ───────────────────────────────────────────────────
+
+// MeetingPageData holds content scraped from a Grain meeting page.
+type MeetingPageData struct {
+	Title        string
+	Date         string
+	Duration     string
+	Participants []string
+	Transcript   string
+	Highlights   []Highlight
+}
+
+// ScrapeMeetingPage navigates to a meeting page and extracts transcript text,
+// highlights, and any additional metadata visible on the page.
+func (b *Browser) ScrapeMeetingPage(ctx context.Context, pageURL string) (*MeetingPageData, error) {
+	if err := rod.Try(func() {
+		b.page.Timeout(20 * time.Second).MustNavigate(pageURL).MustWaitStable()
+	}); err != nil {
+		return nil, fmt.Errorf("navigate to meeting: %w", err)
+	}
+	time.Sleep(2 * time.Second)
+
+	data := &MeetingPageData{}
+
+	// Extract page metadata (title, date, duration, participants).
+	data.Title = b.scrapeText(`h1, [data-testid="meeting-title"], .meeting-title`)
+	data.Date = b.scrapeAttribute(`time[datetime]`, "datetime")
+	if data.Date == "" {
+		data.Date = b.scrapeText(`time, [data-testid="meeting-date"]`)
+	}
+	data.Duration = b.scrapeText(`[data-testid="meeting-duration"], .duration`)
+	data.Participants = b.scrapeParticipants()
+
+	// Click transcript tab/section if present.
+	b.clickElement(`[data-testid="transcript-tab"], button:has-text("Transcript"), [role="tab"]:has-text("Transcript")`)
+	time.Sleep(1 * time.Second)
+
+	data.Transcript = b.scrapeTranscript()
+	data.Highlights = b.scrapeHighlights(ctx)
+
+	return data, nil
+}
+
+// scrapeText returns the trimmed text content of the first matching element.
+func (b *Browser) scrapeText(selectors string) string {
+	for _, sel := range strings.Split(selectors, ",") {
+		sel = strings.TrimSpace(sel)
+		el, err := b.page.Timeout(2 * time.Second).Element(sel)
+		if err != nil || el == nil {
+			continue
+		}
+		text, err := el.Text()
+		if err != nil {
+			continue
+		}
+		if t := strings.TrimSpace(text); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+// scrapeAttribute returns an attribute value from the first matching element.
+func (b *Browser) scrapeAttribute(sel, attr string) string {
+	el, err := b.page.Timeout(2 * time.Second).Element(sel)
+	if err != nil || el == nil {
+		return ""
+	}
+	val, err := el.Attribute(attr)
+	if err != nil || val == nil {
+		return ""
+	}
+	return strings.TrimSpace(*val)
+}
+
+// scrapeParticipants extracts participant names from the meeting page.
+func (b *Browser) scrapeParticipants() []string {
+	result := b.page.MustEval(`() => {
+		const names = new Set();
+		// Try participant list elements.
+		document.querySelectorAll('[data-testid="participant"], .participant-name, .attendee-name').forEach(el => {
+			const t = (el.textContent || '').trim();
+			if (t) names.add(t);
+		});
+		// Try avatar tooltips / aria-labels.
+		document.querySelectorAll('[aria-label*="participant"], [title]').forEach(el => {
+			const label = el.getAttribute('aria-label') || el.getAttribute('title') || '';
+			if (label && !label.includes('button') && !label.includes('menu') && label.length < 60) {
+				// skip generic UI labels
+			}
+		});
+		return Array.from(names);
+	}`)
+	var participants []string
+	for _, item := range result.Arr() {
+		if s := item.Str(); s != "" {
+			participants = append(participants, s)
+		}
+	}
+	return participants
+}
+
+// scrapeTranscript extracts transcript text from the meeting page.
+// Grain typically renders transcript segments as individual elements.
+func (b *Browser) scrapeTranscript() string {
+	// Try structured transcript segments first.
+	result := b.page.MustEval(`() => {
+		const segments = [];
+
+		// Common transcript container selectors.
+		const containers = document.querySelectorAll(
+			'[data-testid="transcript-segment"], ' +
+			'.transcript-segment, ' +
+			'[class*="transcript"] [class*="segment"], ' +
+			'[class*="transcript"] [class*="block"], ' +
+			'[class*="Transcript"] [class*="Segment"]'
+		);
+
+		if (containers.length > 0) {
+			containers.forEach(seg => {
+				const speaker = (seg.querySelector('[class*="speaker"], [class*="Speaker"], [data-testid="speaker-name"]') || {}).textContent || '';
+				const text = (seg.querySelector('[class*="text"], [class*="Text"], [class*="content"], p') || seg).textContent || '';
+				const clean = text.replace(speaker, '').trim();
+				if (clean) {
+					segments.push(speaker.trim() ? (speaker.trim() + ': ' + clean) : clean);
+				}
+			});
+			return segments.join('\n\n');
+		}
+
+		// Fallback: look for a transcript container and get all its text.
+		const wrapper = document.querySelector(
+			'[data-testid="transcript"], ' +
+			'[class*="transcript-content"], ' +
+			'[class*="TranscriptContent"], ' +
+			'[role="article"][class*="transcript"]'
+		);
+		if (wrapper) {
+			return wrapper.innerText.trim();
+		}
+
+		// Last resort: any large text block that looks like a transcript.
+		const main = document.querySelector('main, [role="main"]');
+		if (main) {
+			const allText = main.innerText || '';
+			// Only return if it's substantial (looks like actual transcript).
+			if (allText.length > 200) {
+				return allText.trim();
+			}
+		}
+
+		return '';
+	}`)
+	return result.Str()
+}
+
+// scrapeHighlights extracts highlights/clips from the meeting page.
+func (b *Browser) scrapeHighlights(ctx context.Context) []Highlight {
+	// Try clicking the highlights tab.
+	b.clickElement(`[data-testid="highlights-tab"], button:has-text("Highlights"), [role="tab"]:has-text("Highlights"), button:has-text("Clips")`)
+	time.Sleep(1 * time.Second)
+
+	result := b.page.MustEval(`() => {
+		const highlights = [];
+		const elements = document.querySelectorAll(
+			'[data-testid="highlight"], ' +
+			'[data-testid="clip"], ' +
+			'[class*="highlight-card"], ' +
+			'[class*="HighlightCard"], ' +
+			'[class*="clip-card"], ' +
+			'[class*="ClipCard"]'
+		);
+
+		elements.forEach((el, i) => {
+			const text = (el.querySelector('[class*="text"], [class*="content"], [class*="quote"], p') || {}).textContent || '';
+			const speaker = (el.querySelector('[class*="speaker"], [class*="Speaker"]') || {}).textContent || '';
+			const title = (el.querySelector('[class*="title"], h3, h4') || {}).textContent || '';
+			const timeEl = el.querySelector('[class*="time"], [class*="timestamp"], time');
+			const timeText = timeEl ? (timeEl.getAttribute('datetime') || timeEl.textContent || '') : '';
+			const link = el.querySelector('a[href*="highlight"], a[href*="clip"]');
+			const url = link ? link.href : '';
+
+			if (text.trim() || title.trim()) {
+				highlights.push({
+					id: 'highlight-' + i,
+					text: text.trim(),
+					title: title.trim(),
+					speaker: speaker.trim(),
+					timestamp: timeText.trim(),
+					url: url
+				});
+			}
+		});
+
+		return JSON.stringify(highlights);
+	}`)
+
+	raw := result.Str()
+	if raw == "" || raw == "[]" {
+		return nil
+	}
+
+	var highlights []Highlight
+	if err := json.Unmarshal([]byte(raw), &highlights); err != nil {
+		slog.Debug("Failed to parse scraped highlights", "error", err)
+		return nil
+	}
+
+	// Filter out empty highlights.
+	filtered := highlights[:0]
+	for _, h := range highlights {
+		if h.Text != "" || h.Title != "" || h.Content != "" {
+			filtered = append(filtered, h)
+		}
+	}
+	return filtered
+}
+
+// clickElement tries to click the first element matching any of the selectors.
+func (b *Browser) clickElement(selectors string) {
+	for _, sel := range strings.Split(selectors, ",") {
+		sel = strings.TrimSpace(sel)
+		el, err := b.page.Timeout(2 * time.Second).Element(sel)
+		if err != nil || el == nil {
+			continue
+		}
+		if err := el.Click(proto.InputMouseButtonLeft, 1); err == nil {
+			return
+		}
+	}
+}

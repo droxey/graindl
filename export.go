@@ -357,14 +357,29 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 		return r
 	}
 
-	meta := minimalMetadata(ref.ID, ref.Title, coalesce(ref.URL, meetingURL(ref.ID)))
-	if ref.Date != "" {
-		meta.Date = ref.Date
+	// Scrape meeting page for transcript, highlights, and extra metadata.
+	pageURL := coalesce(ref.URL, meetingURL(ref.ID))
+	var scraped *MeetingPageData
+	if b, err := e.lazyBrowser(); err == nil {
+		if data, err := b.ScrapeMeetingPage(ctx, pageURL); err == nil {
+			scraped = data
+		} else {
+			slog.Warn("Meeting page scrape failed, continuing with minimal data", "id", ref.ID, "error", err)
+		}
 	}
 
+	meta := e.buildScrapedMetadata(ref, pageURL, scraped)
+
 	e.writeMetadata(meta, metaPath, r)
+	e.writeTranscript(scraped, ref.ID, base, r)
+	e.writeHighlights(scraped, ref.ID, base, r)
+
+	transcriptText := ""
+	if scraped != nil {
+		transcriptText = scraped.Transcript
+	}
 	if e.cfg.OutputFormat != "" {
-		e.writeFormattedMarkdown(meta, "", base, r)
+		e.writeFormattedMarkdown(meta, transcriptText, base, r)
 	}
 	if !e.cfg.SkipVideo {
 		if e.cfg.AudioOnly {
@@ -387,6 +402,73 @@ func (e *Exporter) writeMetadata(meta *Metadata, path string, r *ExportResult) {
 	}
 	r.MetadataPath = e.relPath(path)
 	slog.Debug("Metadata written", "id", meta.ID)
+}
+
+// buildScrapedMetadata creates a Metadata struct enriched with browser-scraped
+// page data when available, falling back to MeetingRef fields.
+func (e *Exporter) buildScrapedMetadata(ref MeetingRef, pageURL string, scraped *MeetingPageData) *Metadata {
+	meta := &Metadata{
+		ID:    ref.ID,
+		Title: coalesce(ref.Title, "Untitled"),
+		Links: Links{Grain: pageURL},
+	}
+	if ref.Date != "" {
+		meta.Date = ref.Date
+	}
+
+	if scraped == nil {
+		return meta
+	}
+
+	// Enrich from scraped data.
+	if meta.Title == "Untitled" && scraped.Title != "" {
+		meta.Title = scraped.Title
+	}
+	if meta.Date == "" && scraped.Date != "" {
+		meta.Date = scraped.Date
+	}
+	if scraped.Duration != "" {
+		meta.DurationSeconds = scraped.Duration
+	}
+	if len(scraped.Participants) > 0 {
+		meta.Participants = scraped.Participants
+	}
+	if len(scraped.Highlights) > 0 {
+		meta.Highlights = scraped.Highlights
+	}
+
+	return meta
+}
+
+func (e *Exporter) writeTranscript(scraped *MeetingPageData, id, base string, r *ExportResult) {
+	if scraped == nil || scraped.Transcript == "" {
+		return
+	}
+
+	p := base + ".transcript.txt"
+	if writeFile(p, []byte(scraped.Transcript)) == nil {
+		r.TranscriptPaths["text"] = e.relPath(p)
+		slog.Info("Transcript exported", "id", id)
+	}
+}
+
+func (e *Exporter) writeHighlights(scraped *MeetingPageData, id, base string, r *ExportResult) {
+	if scraped == nil || len(scraped.Highlights) == 0 {
+		return
+	}
+
+	clips := make([]HighlightClip, len(scraped.Highlights))
+	for i, h := range scraped.Highlights {
+		clips[i] = normalizeHighlight(h, i)
+	}
+
+	p := base + ".highlights.json"
+	if err := writeJSON(p, clips); err != nil {
+		slog.Error("Highlights write failed", "error", err, "id", id)
+		return
+	}
+	r.HighlightsPath = e.relPath(p)
+	slog.Info("Highlights exported", "id", id, "count", len(clips))
 }
 
 func (e *Exporter) writeFormattedMarkdown(meta *Metadata, transcriptText, base string, r *ExportResult) {

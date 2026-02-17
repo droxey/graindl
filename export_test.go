@@ -90,6 +90,209 @@ func TestExportOneMinimalMetadata(t *testing.T) {
 	}
 }
 
+// ── buildScrapedMetadata ─────────────────────────────────────────────────────
+
+func TestBuildScrapedMetadataMinimal(t *testing.T) {
+	e := &Exporter{cfg: &Config{OutputDir: "/tmp"}}
+	ref := MeetingRef{ID: "id-1", Title: "My Meeting", Date: "2025-06-01T10:00:00Z"}
+	meta := e.buildScrapedMetadata(ref, "https://grain.com/app/meetings/id-1", nil)
+
+	if meta.ID != "id-1" {
+		t.Errorf("ID = %q", meta.ID)
+	}
+	if meta.Title != "My Meeting" {
+		t.Errorf("Title = %q", meta.Title)
+	}
+	if meta.Date != "2025-06-01T10:00:00Z" {
+		t.Errorf("Date = %q", meta.Date)
+	}
+	if meta.Links.Grain != "https://grain.com/app/meetings/id-1" {
+		t.Errorf("Links.Grain = %q", meta.Links.Grain)
+	}
+}
+
+func TestBuildScrapedMetadataEnriched(t *testing.T) {
+	e := &Exporter{cfg: &Config{OutputDir: "/tmp"}}
+	ref := MeetingRef{ID: "id-2", Date: "2025-06-01T10:00:00Z"}
+	scraped := &MeetingPageData{
+		Title:        "Scraped Title",
+		Duration:     "45m",
+		Participants: []string{"Alice", "Bob"},
+		Highlights: []Highlight{
+			{ID: "h1", Text: "Key insight"},
+		},
+	}
+	meta := e.buildScrapedMetadata(ref, "https://grain.com/app/meetings/id-2", scraped)
+
+	// Title should come from scraped data since ref.Title is empty.
+	if meta.Title != "Scraped Title" {
+		t.Errorf("Title = %q, want scraped title", meta.Title)
+	}
+	if meta.DurationSeconds != "45m" {
+		t.Errorf("DurationSeconds = %v", meta.DurationSeconds)
+	}
+	participants, ok := meta.Participants.([]string)
+	if !ok || len(participants) != 2 {
+		t.Errorf("Participants = %v", meta.Participants)
+	}
+	if meta.Highlights == nil {
+		t.Error("Highlights should be populated")
+	}
+}
+
+func TestBuildScrapedMetadataPreservesRefTitle(t *testing.T) {
+	e := &Exporter{cfg: &Config{OutputDir: "/tmp"}}
+	ref := MeetingRef{ID: "id-3", Title: "Ref Title"}
+	scraped := &MeetingPageData{Title: "Scraped Title"}
+	meta := e.buildScrapedMetadata(ref, "https://grain.com/app/meetings/id-3", scraped)
+
+	// Ref title takes precedence when it's not empty.
+	if meta.Title != "Ref Title" {
+		t.Errorf("Title = %q, want ref title", meta.Title)
+	}
+}
+
+// ── writeTranscript ─────────────────────────────────────────────────────────
+
+func TestWriteTranscript(t *testing.T) {
+	dir := t.TempDir()
+	e := &Exporter{cfg: &Config{OutputDir: dir}}
+	r := &ExportResult{TranscriptPaths: make(map[string]string)}
+	base := filepath.Join(dir, "test-id")
+
+	scraped := &MeetingPageData{Transcript: "Hello world\n\nThis is a transcript."}
+	e.writeTranscript(scraped, "test-id", base, r)
+
+	if r.TranscriptPaths["text"] == "" {
+		t.Fatal("TranscriptPaths[text] should be set")
+	}
+
+	// File should exist with correct content.
+	p := filepath.Join(dir, r.TranscriptPaths["text"])
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	if string(raw) != "Hello world\n\nThis is a transcript." {
+		t.Errorf("transcript content = %q", string(raw))
+	}
+
+	// SEC-11: file should be 0o600.
+	info, _ := os.Stat(p)
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("transcript perms = %04o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestWriteTranscriptNilScraped(t *testing.T) {
+	dir := t.TempDir()
+	e := &Exporter{cfg: &Config{OutputDir: dir}}
+	r := &ExportResult{TranscriptPaths: make(map[string]string)}
+	base := filepath.Join(dir, "test-id")
+
+	e.writeTranscript(nil, "test-id", base, r)
+
+	if len(r.TranscriptPaths) != 0 {
+		t.Errorf("TranscriptPaths should be empty for nil scraped data, got %v", r.TranscriptPaths)
+	}
+}
+
+func TestWriteTranscriptEmptyText(t *testing.T) {
+	dir := t.TempDir()
+	e := &Exporter{cfg: &Config{OutputDir: dir}}
+	r := &ExportResult{TranscriptPaths: make(map[string]string)}
+	base := filepath.Join(dir, "test-id")
+
+	e.writeTranscript(&MeetingPageData{Transcript: ""}, "test-id", base, r)
+
+	if len(r.TranscriptPaths) != 0 {
+		t.Errorf("TranscriptPaths should be empty for blank transcript, got %v", r.TranscriptPaths)
+	}
+}
+
+// ── writeHighlights ─────────────────────────────────────────────────────────
+
+func TestWriteHighlights(t *testing.T) {
+	dir := t.TempDir()
+	e := &Exporter{cfg: &Config{OutputDir: dir}}
+	r := &ExportResult{TranscriptPaths: make(map[string]string)}
+	base := filepath.Join(dir, "hl-test")
+
+	scraped := &MeetingPageData{
+		Highlights: []Highlight{
+			{ID: "h1", Text: "Key insight about architecture", Speaker: "Alice"},
+			{ID: "h2", Text: "Action item: review PR", SpeakerName: "Bob"},
+		},
+	}
+	e.writeHighlights(scraped, "hl-test", base, r)
+
+	if r.HighlightsPath == "" {
+		t.Fatal("HighlightsPath should be set")
+	}
+
+	// File should exist.
+	hlPath := filepath.Join(dir, r.HighlightsPath)
+	if !fileExists(hlPath) {
+		t.Fatalf("highlights file missing: %s", hlPath)
+	}
+
+	// SEC-8: path should be relative.
+	if filepath.IsAbs(r.HighlightsPath) {
+		t.Errorf("HighlightsPath should be relative, got %q", r.HighlightsPath)
+	}
+
+	// SEC-11: file should be 0o600.
+	info, _ := os.Stat(hlPath)
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("highlights perms = %04o, want 0600", info.Mode().Perm())
+	}
+
+	// Verify content.
+	raw, _ := os.ReadFile(hlPath)
+	var clips []HighlightClip
+	if err := json.Unmarshal(raw, &clips); err != nil {
+		t.Fatalf("unmarshal highlights: %v", err)
+	}
+	if len(clips) != 2 {
+		t.Fatalf("expected 2 clips, got %d", len(clips))
+	}
+	if clips[0].Text != "Key insight about architecture" {
+		t.Errorf("clips[0].Text = %q", clips[0].Text)
+	}
+	if clips[0].Speaker != "Alice" {
+		t.Errorf("clips[0].Speaker = %q", clips[0].Speaker)
+	}
+	if clips[1].Speaker != "Bob" {
+		t.Errorf("clips[1].Speaker = %q", clips[1].Speaker)
+	}
+}
+
+func TestWriteHighlightsNilScraped(t *testing.T) {
+	dir := t.TempDir()
+	e := &Exporter{cfg: &Config{OutputDir: dir}}
+	r := &ExportResult{TranscriptPaths: make(map[string]string)}
+	base := filepath.Join(dir, "test-id")
+
+	e.writeHighlights(nil, "test-id", base, r)
+
+	if r.HighlightsPath != "" {
+		t.Errorf("HighlightsPath should be empty for nil scraped data, got %q", r.HighlightsPath)
+	}
+}
+
+func TestWriteHighlightsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	e := &Exporter{cfg: &Config{OutputDir: dir}}
+	r := &ExportResult{TranscriptPaths: make(map[string]string)}
+	base := filepath.Join(dir, "test-id")
+
+	e.writeHighlights(&MeetingPageData{Highlights: nil}, "test-id", base, r)
+
+	if r.HighlightsPath != "" {
+		t.Errorf("HighlightsPath should be empty for no highlights, got %q", r.HighlightsPath)
+	}
+}
+
 func TestExportOneSkipExisting(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{

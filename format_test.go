@@ -521,3 +521,65 @@ func TestRunSingleMeetingWithFormat(t *testing.T) {
 		t.Error("should have Obsidian tags field")
 	}
 }
+
+// ── writeFormattedMarkdown with transcript content ──────────────────────────
+
+func TestWriteFormattedMarkdownWithTranscript(t *testing.T) {
+	dir := t.TempDir()
+	e := &Exporter{cfg: &Config{OutputDir: dir, OutputFormat: "obsidian"}}
+	r := &ExportResult{TranscriptPaths: make(map[string]string)}
+	base := filepath.Join(dir, "tx-test")
+
+	meta := &Metadata{
+		ID:    "tx-test",
+		Title: "Transcript Meeting",
+		Date:  "2025-06-01",
+		Links: Links{Grain: "https://grain.com/app/meetings/tx-test"},
+	}
+
+	e.writeFormattedMarkdown(meta, "Hello world transcript text", base, r)
+
+	if r.MarkdownPath == "" {
+		t.Fatal("MarkdownPath should be set")
+	}
+
+	mdPath := filepath.Join(dir, r.MarkdownPath)
+	data, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatalf("read markdown: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "## Transcript") {
+		t.Error("should have Transcript section")
+	}
+	if !strings.Contains(content, "Hello world transcript text") {
+		t.Error("should include transcript content")
+	}
+}
+
+func TestWriteFormattedMarkdownEmptyTranscript(t *testing.T) {
+	dir := t.TempDir()
+	e := &Exporter{cfg: &Config{OutputDir: dir, OutputFormat: "notion"}}
+	r := &ExportResult{TranscriptPaths: make(map[string]string)}
+	base := filepath.Join(dir, "no-tx")
+
+	meta := &Metadata{
+		ID:    "no-tx",
+		Title: "No Transcript",
+		Links: Links{Grain: "https://grain.com/app/meetings/no-tx"},
+	}
+
+	e.writeFormattedMarkdown(meta, "", base, r)
+
+	if r.MarkdownPath == "" {
+		t.Fatal("MarkdownPath should be set")
+	}
+
+	data, _ := os.ReadFile(filepath.Join(dir, r.MarkdownPath))
+	content := string(data)
+
+	if strings.Contains(content, "## Transcript") {
+		t.Error("should NOT have Transcript section when transcript is empty")
+	}
+}
