@@ -60,9 +60,12 @@ func NewBrowser(cfg *Config, throttle *Throttle) (*Browser, error) {
 		return nil, fmt.Errorf("page: %w", err)
 	}
 
-	page.MustEvalOnNewDocument(`() => {
+	if _, err := page.EvalOnNewDocument(`() => {
 		Object.defineProperty(navigator, 'webdriver', {get: () => false});
-	}`)
+	}`); err != nil {
+		page.Close()
+		return nil, fmt.Errorf("stealth setup: %w", err)
+	}
 
 	return &Browser{browser: b, page: page, cfg: cfg, throttle: throttle}, nil
 }
@@ -87,7 +90,11 @@ func (b *Browser) Login(ctx context.Context) ([]*http.Cookie, error) {
 		return nil, fmt.Errorf("navigate: %w", err)
 	}
 
-	pageURL := b.page.MustInfo().URL
+	info, err := b.page.Info()
+	if err != nil {
+		return nil, fmt.Errorf("page info: %w", err)
+	}
+	pageURL := info.URL
 	if containsAny(pageURL, "login", "signin", "oauth") {
 		fmt.Println("\n━━━ LOGIN REQUIRED ━━━")
 		fmt.Println("Complete login in the browser window. (120s timeout)")
@@ -98,13 +105,15 @@ func (b *Browser) Login(ctx context.Context) ([]*http.Cookie, error) {
 			if err := ctx.Err(); err != nil {
 				return nil, fmt.Errorf("cancelled during login: %w", err)
 			}
-			if strings.Contains(b.page.MustInfo().URL, "/app/") {
+			info, err := b.page.Info()
+			if err == nil && strings.Contains(info.URL, "/app/") {
 				slog.Info("Login successful")
 				break
 			}
 			time.Sleep(2 * time.Second)
 		}
-		if !strings.Contains(b.page.MustInfo().URL, "/app/") {
+		info, err = b.page.Info()
+		if err != nil || !strings.Contains(info.URL, "/app/") {
 			return nil, fmt.Errorf("login timed out (120s)")
 		}
 	}
@@ -156,14 +165,14 @@ func (b *Browser) DiscoverMeetings(ctx context.Context) ([]MeetingRef, error) {
 			prevCount = count
 		}
 		slog.Debug("Scrolling meeting list", "loaded", count)
-		b.page.MustEval(`() => {
+		_, _ = b.page.Eval(`() => {
 			const el = document.querySelector('main, [role="main"]') || window;
 			el === window ? window.scrollBy(0, 1000) : (el.scrollTop += 1000);
 		}`)
 		time.Sleep(1500 * time.Millisecond)
 	}
 
-	result := b.page.MustEval(`() => {
+	result, err := b.page.Eval(`() => {
 		const seen = new Set(), out = [];
 		document.querySelectorAll('a[href*="/app/meetings/"]').forEach(a => {
 			const m = a.href.match(/\/app\/meetings\/([a-f0-9-]+)/i);
@@ -174,9 +183,12 @@ func (b *Browser) DiscoverMeetings(ctx context.Context) ([]MeetingRef, error) {
 		});
 		return out;
 	}`)
+	if err != nil {
+		return nil, fmt.Errorf("extract meeting links: %w", err)
+	}
 
 	var meetings []MeetingRef
-	for _, item := range result.Arr() {
+	for _, item := range result.Value.Arr() {
 		m := item.Map()
 		meetings = append(meetings, MeetingRef{
 			ID:    m["id"].Str(),
@@ -188,7 +200,17 @@ func (b *Browser) DiscoverMeetings(ctx context.Context) ([]MeetingRef, error) {
 }
 
 func (b *Browser) countLinks() int {
-	return b.page.MustEval(`() => new Set([...document.querySelectorAll('a[href*="/app/meetings/"]')] .map(a => a.href).filter(h => /\/app\/meetings\/[a-f0-9-]+/i.test(h))).size `).Int()
+	result, err := b.page.Eval(`() => {
+		const links = document.querySelectorAll('a[href*="/app/meetings/"]');
+		const unique = new Set(
+			[...links].map(a => a.href).filter(h => /\/app\/meetings\/[a-f0-9-]+/i.test(h))
+		);
+		return unique.size;
+	}`)
+	if err != nil {
+		return 0
+	}
+	return result.Value.Int()
 }
 
 // ── Video Source Discovery ──────────────────────────────────────────────────
@@ -290,7 +312,33 @@ func (b *Browser) tryDownloadBtn(ctx context.Context, outputPath string) string 
 }
 
 func (b *Browser) extractVideoURL() string {
-	return b.page.MustEval(`() => { const v = document.querySelector('video'); if (v?.src?.startsWith('http')) return v.src; const s = document.querySelector('video source'); if (s?.src) return s.src; for (const sc of document.querySelectorAll('script')) { const m = (sc.textContent||'').match(/(https?:\/\/[^"'\s]+\.(mp4|webm|m3u8)[^"'\s]*)/i); if (m) return m[1]; } const el = document.querySelector('[data-video-url],[data-src]'); if (el) return el.getAttribute('data-video-url') || el.getAttribute('data-src') || ''; return ''; }`).Str()
+	result, err := b.page.Eval(`() => {
+		// 1. <video src="...">
+		const v = document.querySelector('video');
+		if (v?.src?.startsWith('http')) return v.src;
+
+		// 2. <video><source src="..."></video>
+		const s = document.querySelector('video source');
+		if (s?.src) return s.src;
+
+		// 3. Inline script containing a video URL.
+		for (const sc of document.querySelectorAll('script')) {
+			const m = (sc.textContent || '').match(
+				/(https?:\/\/[^"'\s]+\.(mp4|webm|m3u8)[^"'\s]*)/i
+			);
+			if (m) return m[1];
+		}
+
+		// 4. Data attributes.
+		const el = document.querySelector('[data-video-url],[data-src]');
+		if (el) return el.getAttribute('data-video-url') || el.getAttribute('data-src') || '';
+
+		return '';
+	}`)
+	if err != nil {
+		return ""
+	}
+	return result.Value.Str()
 }
 
 var videoRe = regexp.MustCompile(`\.(mp4|webm|m3u8)`)
@@ -313,7 +361,11 @@ func (b *Browser) interceptNetwork(pageURL string) string {
 		b.page.Timeout(20 * time.Second).MustNavigate(pageURL).MustWaitStable()
 	})
 	time.Sleep(2 * time.Second)
-	b.page.MustEval(`() => { const v = document.querySelector('video'); if(v) v.play().catch(()=>{}); }`)
+	// Trigger video playback to provoke network requests.
+	_, _ = b.page.Eval(`() => {
+		const v = document.querySelector('video');
+		if (v) v.play().catch(() => {});
+	}`)
 	time.Sleep(4 * time.Second)
 
 	if v := found.Load(); v != nil {
@@ -336,14 +388,40 @@ func (b *Browser) resolveURL(videoURL, outputPath string) (string, string) {
 	return "url-saved", p
 }
 
+// maxFetchViaJSBytes is the maximum video size fetchViaJS will attempt.
+// Larger files should be downloaded via Go's http.Client or Rod's download API
+// to avoid exhausting the browser's JS heap.
+const maxFetchViaJSBytes = 50 * 1024 * 1024 // 50 MB
+
 func (b *Browser) fetchViaJS(videoURL, outputPath string) bool {
 	// SEC: Use json.Marshal for correct JavaScript string escaping (not Go's %q).
 	urlJSON, err := json.Marshal(videoURL)
 	if err != nil {
 		return false
 	}
-	r := b.page.MustEval(fmt.Sprintf(`async () => { try { const r = await fetch(%s); if (!r.ok) return ''; const buf = await r.arrayBuffer(); const b = new Uint8Array(buf); let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s); } catch { return ''; } }`, urlJSON))
-	b64 := r.Str()
+	result, err := b.page.Eval(fmt.Sprintf(`async () => {
+		try {
+			const r = await fetch(%s);
+			if (!r.ok) return '';
+			// Bail out if the response is too large for in-browser download.
+			const cl = parseInt(r.headers.get('content-length') || '0', 10);
+			if (cl > %d) return 'TOO_LARGE';
+			const buf = await r.arrayBuffer();
+			if (buf.byteLength > %d) return 'TOO_LARGE';
+			const b = new Uint8Array(buf);
+			let s = '';
+			for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+			return btoa(s);
+		} catch { return ''; }
+	}`, urlJSON, maxFetchViaJSBytes, maxFetchViaJSBytes))
+	if err != nil {
+		return false
+	}
+	b64 := result.Value.Str()
+	if b64 == "TOO_LARGE" {
+		slog.Warn("Video too large for in-browser fetch, skipping", "url", videoURL)
+		return false
+	}
 	if len(b64) < 100 {
 		return false
 	}
@@ -437,7 +515,7 @@ func (b *Browser) scrapeAttribute(sel, attr string) string {
 
 // scrapeParticipants extracts participant names from the meeting page.
 func (b *Browser) scrapeParticipants() []string {
-	result := b.page.MustEval(`() => {
+	result, err := b.page.Eval(`() => {
 		const names = new Set();
 		// Try participant list elements.
 		document.querySelectorAll('[data-testid="participant"], .participant-name, .attendee-name').forEach(el => {
@@ -453,8 +531,11 @@ func (b *Browser) scrapeParticipants() []string {
 		});
 		return Array.from(names);
 	}`)
+	if err != nil {
+		return nil
+	}
 	var participants []string
-	for _, item := range result.Arr() {
+	for _, item := range result.Value.Arr() {
 		if s := item.Str(); s != "" {
 			participants = append(participants, s)
 		}
@@ -466,7 +547,7 @@ func (b *Browser) scrapeParticipants() []string {
 // Grain typically renders transcript segments as individual elements.
 func (b *Browser) scrapeTranscript() string {
 	// Try structured transcript segments first.
-	result := b.page.MustEval(`() => {
+	result, err := b.page.Eval(`() => {
 		const segments = [];
 
 		// Common transcript container selectors.
@@ -513,7 +594,10 @@ func (b *Browser) scrapeTranscript() string {
 
 		return '';
 	}`)
-	return result.Str()
+	if err != nil {
+		return ""
+	}
+	return result.Value.Str()
 }
 
 // scrapeHighlights extracts highlights/clips from the meeting page.
@@ -522,7 +606,7 @@ func (b *Browser) scrapeHighlights(ctx context.Context) []Highlight {
 	b.clickElement(`[data-testid="highlights-tab"], button:has-text("Highlights"), [role="tab"]:has-text("Highlights"), button:has-text("Clips")`)
 	time.Sleep(1 * time.Second)
 
-	result := b.page.MustEval(`() => {
+	result, err := b.page.Eval(`() => {
 		const highlights = [];
 		const elements = document.querySelectorAll(
 			'[data-testid="highlight"], ' +
@@ -556,8 +640,11 @@ func (b *Browser) scrapeHighlights(ctx context.Context) []Highlight {
 
 		return JSON.stringify(highlights);
 	}`)
+	if err != nil {
+		return nil
+	}
 
-	raw := result.Str()
+	raw := result.Value.Str()
 	if raw == "" || raw == "[]" {
 		return nil
 	}

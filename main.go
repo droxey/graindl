@@ -108,6 +108,8 @@ func main() {
 	flag.BoolVar(&cfg.Watch, "watch", envBool(dotenv, "GRAIN_WATCH"), "Run continuously, polling for new meetings")
 	flag.StringVar(&intervalStr, "interval", intervalStr, "Polling interval for watch mode (e.g. 5m, 30m, 1h)")
 	flag.StringVar(&cfg.OutputFormat, "output-format", envGet(dotenv, "GRAIN_OUTPUT_FORMAT"), "Export format: obsidian, notion (adds frontmatter markdown)")
+	flag.StringVar(&cfg.HealthcheckFile, "healthcheck-file", envGet(dotenv, "GRAIN_HEALTHCHECK_FILE"), "File to touch after each watch cycle (for monitoring)")
+	flag.StringVar(&cfg.LogFormat, "log-format", envGet(dotenv, "GRAIN_LOG_FORMAT"), "Log format: color (default), json")
 	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
 	flag.Parse()
 
@@ -116,12 +118,16 @@ func main() {
 		os.Exit(0)
 	}
 
-	// GO-2: set up slog with color handler, level gated by --verbose
+	// GO-2: set up slog with color handler or JSON, level gated by --verbose
 	logLevel := slog.LevelInfo
 	if cfg.Verbose {
 		logLevel = slog.LevelDebug
 	}
-	slog.SetDefault(slog.New(NewColorHandler(os.Stderr, logLevel)))
+	if strings.ToLower(cfg.LogFormat) == "json" {
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
+	} else {
+		slog.SetDefault(slog.New(NewColorHandler(os.Stderr, logLevel)))
+	}
 
 	if cfg.Parallel < 1 {
 		cfg.Parallel = 1

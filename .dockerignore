@@ -3,4 +3,16 @@ recordings/
 .env
 *.mp4
 *.mp3
+*.m4a
 graindl
+*_test.go
+AUDIT.md
+REVIEW.md
+CLAUDE.md
+README.md
+Makefile
+.gitignore
+.github/
+coverage.out
+coverage.html
+.DS_Store

@@ -1,244 +1,324 @@
-# Software Design & Infrastructure Code Review
+# Code Review: graindl
 
-**Project:** graindl
+**Reviewers:** Go Engineering & Ops Engineering
 **Date:** 2026-02-17
-**Scope:** Architecture, code quality, infrastructure, security, test suite
+**Scope:** Full codebase review — architecture, code quality, security, testing, and operational readiness.
+**Build status:** `go vet` clean, `go test -race ./...` all passing.
 
 ---
 
 ## Executive Summary
 
-graindl is a well-structured Go CLI with clear separation of concerns, strong security practices, and a comprehensive test suite. The flat single-package layout is appropriate for the project's size. Key strengths include disciplined API response flexibility handling, crypto-random throttling, and consistent file permission enforcement. The review identifies several issues ranging from compilation errors to design improvements.
+graindl is a well-structured, security-conscious Go CLI tool for exporting Grain meeting data. The codebase demonstrates strong fundamentals: proper context propagation, crypto-secure randomness, restrictive file permissions, input sanitization, and a thorough test suite. The flat single-package layout is appropriate for the project's scope.
+
+That said, several areas warrant attention — most are improvements rather than critical defects. The findings below are organized by severity and domain.
 
 ---
 
-## 1. Critical: Compilation Errors
+## Go Engineering Findings
 
-The codebase does not currently compile. `go vet` reports errors and manual inspection reveals multiple issues:
+### Critical
 
-### 1.1 Duplicate struct fields in `Config` (`models.go:16-52`)
+**1. Shared `*rod.Page` across concurrent operations — `browser.go:26`, `export.go:578`**
 
-The `Config` struct declares fields twice. Lines 17-33 define `Token`, `TokenFile`, `OutputDir`, `SessionDir`, `MaxMeetings`, `MeetingID`, `DryRun`, `SkipVideo`, `Overwrite`, `Headless`, `CleanSession`, `Verbose`, `MinDelaySec`, `MaxDelaySec`, `SearchQuery`, `Watch`, and `WatchInterval`. Then lines 34-51 re-declare most of these with different alignment, plus add `Parallel`, `AudioOnly`, and `OutputFormat`. This is a merge conflict artifact — the two blocks need to be unified into a single struct definition.
+`Browser` holds a single `page *rod.Page` field that is reused by all operations — `ScrapeMeetingPage`, `DownloadVideo`, `FindVideoSource`, `DiscoverMeetings`. When `--parallel > 1`, multiple goroutines call `e.lazyBrowser()` (which returns the same `*Browser`), then call methods like `ScrapeMeetingPage` that navigate the shared page to different URLs. This is a data race on the browser page state.
 
-### 1.2 Unclosed braces in `main.go:170-172`
+`lazyBrowser()` is correctly mutex-protected for *initialization*, but the `Browser` methods themselves are not safe for concurrent use — they all call `b.page.MustNavigate(...)` on the same page.
 
-The `--watch` + `--overwrite` validation block is missing a closing brace and `os.Exit(1)` before the `--output-format` validation:
+**Impact:** With `--parallel > 1` and browser-based operations (video downloads, scraping), page navigations will collide, producing corrupted results or panics.
+
+**Recommendation:** Either (a) create a new page per `exportOne` call via a pool, or (b) use `browserMu` to serialize all browser operations (converting `--parallel` into sequential for browser paths), or (c) maintain a page pool. Option (b) is simplest and matches the current architecture.
+
+---
+
+### High
+
+**2. `MustEval` / `MustNavigate` / `MustWaitStable` panics are partially unguarded — `browser.go`**
+
+Some call sites wrap `Must*` calls in `rod.Try(func() { ... })` (e.g., `Login`, `DiscoverMeetings` navigation), but many `MustEval` calls are not guarded:
+
+- `browser.go:63` — `page.MustEvalOnNewDocument`
+- `browser.go:159-163` — `b.page.MustEval` in `DiscoverMeetings` scroll loop
+- `browser.go:166-176` — `b.page.MustEval` to extract meeting links
+- `browser.go:191` — `countLinks()`
+- `browser.go:293` — `extractVideoURL()`
+- `browser.go:316` — video play trigger
+- `browser.go:440` — `scrapeParticipants()`
+- `browser.go:469` — `scrapeTranscript()`
+- `browser.go:525` — `scrapeHighlights()`
+
+If any of these JavaScript evaluations fail (network timeout, page crash, navigation race), the process panics with no recovery.
+
+**Recommendation:** Replace `MustEval` with `Eval` and handle errors, or wrap the callers in `rod.Try`. The scraping functions (`ScrapeMeetingPage` and children) should be especially resilient since they run against external HTML that may change.
+
+**3. In-process video download via JS `fetch` + base64 — `browser.go:339-355`**
+
+`fetchViaJS` downloads an entire video file into the browser's JS heap as a `Uint8Array`, converts it to a string character-by-character, then base64-encodes it, sends the base64 string over CDP to Go, and Go decodes it. For large videos (hundreds of MB), this will:
+
+- Exhaust the renderer's memory (Chromium tabs have per-process limits).
+- Produce massive CDP messages that may time out.
+- Use ~4x the memory of the video file (raw + string + base64 + decoded).
+
+**Recommendation:** Use Rod's download API or Go's `http.Client` with session cookies exported from the browser. If `fetchViaJS` must remain as a fallback, add a size check in JS (`r.headers.get('content-length')`) and bail out above a threshold (e.g., 50MB).
+
+---
+
+### Medium
+
+**4. `ColorHandler` ignores the `group` field — `logger.go:103-109`**
+
+`WithGroup` stores the group name but `Handle` never uses it. If code like `slog.With("component", "browser").WithGroup("scraper")` is used, the group prefix will be silently dropped. This violates the `slog.Handler` contract.
+
+**Recommendation:** Prepend the group name to attribute keys in `collectAttrs`, e.g., `group.key=value`.
+
+**5. `Exporter.discover` is hardcoded to browser-only — `export.go:317-319`**
 
 ```go
-if cfg.Overwrite {
-    slog.Error("--watch cannot be used with --overwrite ...")
-// missing: os.Exit(1) and closing }
-if cfg.OutputFormat != "" {
+func (e *Exporter) discover(ctx context.Context) ([]MeetingRef, error) {
+    return e.discoverViaBrowser(ctx)
+}
 ```
 
-Similarly, the `if cfg.Watch {` block at line 200 appears to be missing its closing brace before the `if cfg.OutputFormat != ""` block at line 202.
+The `CLAUDE.md` documentation describes "API-only (using a Grain API token)" mode and references a `scraper.go` HTTP API client for `/me`, `/recordings`, and `/recordings/:id` endpoints. However, `scraper.go` does not exist in the repository, `discover()` unconditionally calls `discoverViaBrowser`, and there is no API-based discovery path. Either the API client was removed without updating the documentation, or it was planned but never implemented.
 
-### 1.3 Duplicate `SkipVideo` field in test (`export_test.go:1088-1089`)
+**Recommendation:** Update `CLAUDE.md` to reflect the current browser-only architecture. Remove references to `scraper.go`, `Scraper`, API token-based operation, `--token`/`--token-file` flags, response size limits (`io.LimitReader`), pagination circuit breakers, and other API-only features that don't exist in the code.
+
+**6. Error in `writeTranscript` / `writeHighlights` is silently swallowed — `export.go:449,466`**
 
 ```go
-AudioOnly:   true,
-SkipVideo:   false,
-SkipVideo:   true,  // duplicate
+if writeFile(p, []byte(scraped.Transcript)) == nil {
 ```
 
-### 1.4 Duplicate method call in `exportOne` (`export.go:412-421`)
+When `writeFile` fails (disk full, permissions), the error is silently ignored and the transcript path is simply not set on the result. The highlights writer logs the error but doesn't mark the export result as degraded.
 
-`writeMetadata` is called twice with different signatures — once with `(rec, ref, metaPath, r)` at line 412 and once with `(meta, metaPath, r)` at line 421. The first call uses a signature that doesn't match the method definition at line 440. This is another merge conflict artifact.
+**Recommendation:** At minimum, log all write failures. Consider adding a `Warnings []string` field to `ExportResult` to track partial failures.
 
-### 1.5 Interleaved function bodies in `export_test.go`
+**7. `loadDotEnv` doesn't handle inline comments or escaped quotes — `main.go:25-51`**
 
-Several test functions have their closing braces and body text interleaved with the start of other functions (e.g., `TestParallelExportBasic` at line 1063 bleeds into audio-only test code, and `TestExportOneAudioOnlyAndSkipVideoMutualExclusion` at line 1133 bleeds into parallel export skip logic). This makes the file uncompilable.
+The .env parser strips both single and double quotes but doesn't handle:
 
-**Recommendation:** These must be resolved before any other work. They appear to be artifacts of an incomplete merge that introduced `AudioOnly`, `OutputFormat`, `Watch`, and `Parallel` features simultaneously.
+- Inline comments: `KEY=value # comment` parses as `value # comment`.
+- Escaped quotes: `KEY="value with \"quotes\""` parses as `value with \`.
 
----
+**Impact:** Low — env values in this project are simple tokens/paths/booleans, and the CLAUDE.md documents the parser as minimal. Still worth noting for anyone extending it.
 
-## 2. Architecture & Design
+**8. `filtered := meetings[:0]` reuses backing array — `export.go:68`, `browser.go:572`**
 
-### 2.1 Strengths
+The in-place filter pattern is a valid Go idiom and safe here (the original is immediately overwritten), but `slices.DeleteFunc` (available since Go 1.21) would be clearer and less error-prone for future maintainers.
 
-- **Clear data flow:** `main` → `Exporter.Run` → `discover` → `exportOne` → `writeManifest` is easy to follow. The orchestrator pattern in `export.go` cleanly separates discovery from per-meeting export.
+**9. `RunWatch` test path bypasses main() validation — `watch.go`, `watch_test.go`**
 
-- **API response flexibility:** The `GrainRecording` accessor pattern (`GetTitle()`, `GetDate()`, etc.) with `coalesce`/`firstNonNil` helpers is a pragmatic solution for an API that returns inconsistent field names across versions. The custom `UnmarshalJSON` on `RecordingsPage` reinforces this.
-
-- **Lazy browser initialization:** `lazyBrowser()` with `sync.Mutex` avoids launching Chromium when only API-mode is needed. Good resource management.
-
-- **Two independent throttle instances:** Separating Exporter (inter-meeting) and Scraper (inter-API-call) throttles allows different components to rate-limit independently without interference.
-
-- **Context propagation:** Context threading through all operations enables clean cancellation from signal handlers. The `Throttle.Wait` method's `select` on both timer and `ctx.Done()` is correct.
-
-### 2.2 Design Concerns
-
-**2.2.1 Flat package with no interfaces**
-
-All components are concrete types with no interfaces. This makes the browser a hard dependency in `Exporter` — there's no way to unit test `writeVideo` or `writeAudio` without a real Chromium instance. Defining a `VideoDownloader` interface would allow mock injection in tests.
-
-**2.2.2 `any`-typed fields in `GrainRecording`**
-
-Fields like `Duration any`, `Participants any`, `Tags any`, `Highlights any` are typed as `any` to accommodate API variation. While pragmatic, this pushes type assertions deep into business logic (`toFloat64`, `flattenStringSlice`, `parseHighlights`). Consider using `json.RawMessage` for these fields and providing typed accessors that unmarshal on demand — this preserves flexibility while keeping the type boundary explicit.
-
-**2.2.3 Search results use `div[role="link"]` selector**
-
-`search.go:17` uses a broad CSS selector that depends on Grain's specific DOM structure. Any UI redesign breaks this. The code acknowledges this with the comment "broad — UUID filter is the real gate," which is a reasonable mitigation, but the selector should be documented as a known fragility.
-
-**2.2.4 Parallel export status counting is single-writer but could drift**
-
-`exportParallel` uses a channel-based single-writer pattern for manifest updates, which is correct. However, if the producer goroutine panics, the `results` channel is never closed and the consumer goroutine hangs. A `defer close(results)` inside the producer goroutine (after `wg.Wait()`) handles this, but a panic before `wg.Wait()` would still leak. Consider wrapping the producer in a recovery.
-
-**2.2.5 `writeMetadata` called before `meta` is constructed**
-
-In `exportOne` (after the merge is resolved), ensure the single `writeMetadata` call receives the properly constructed `*Metadata` value, not the raw `*GrainRecording`.
+`main()` rejects `--watch --id` as an invalid combination, but the watch tests use `MeetingID` + `Watch` directly by constructing a `Config` struct. This means the tests exercise a code path that production can never reach. The tests are useful for verifying watch loop mechanics, but the discrepancy should be documented.
 
 ---
 
-## 3. Security
+### Low
 
-### 3.1 Strengths
+**10. `writeJSON` / `writeFile` don't `fsync` — `models.go:302-312`**
 
-The security posture is strong for a CLI tool:
+`os.WriteFile` does not guarantee data is flushed to disk. For a CLI tool this is acceptable, but for `--watch` mode running unattended for hours/days, consider `Sync()` for the manifest file at minimum.
 
-- **File permissions:** Consistent 0o600 for files, 0o700 for session dirs, enforced via `writeJSON`, `writeFile`, `ensureDirPrivate`, and `fixPerms`.
-- **Token handling:** `--token-file` preferred over `--token`, with a warning when the flag is used. Token never logged.
-- **Input validation:** `validID` regex blocks path traversal and URL injection in recording IDs. `sanitize()` strips dangerous characters from filenames.
-- **Response limits:** `io.LimitReader` caps API responses at 50MB. Pagination circuit breaker at 100 pages.
-- **URL encoding:** Parameters always encoded via `url.Values.Encode()`.
-- **Manifest paths:** Always relative via `relPath()`.
-- **Browser stealth:** `navigator.webdriver` suppressed.
+**11. `sanitize` truncates by bytes, not runes — `models.go:280`**
 
-### 3.2 Concerns
+`len(s) > 200` counts bytes, not runes. A string with multibyte Unicode characters could be truncated mid-rune, producing invalid UTF-8 in the filename. Use `utf8.RuneCountInString` or `[]rune` conversion.
 
-**3.2.1 `convert_hls.sh` does not validate HLS URLs**
-
-The script reads URLs from `.m3u8.url` files and passes them directly to ffmpeg. If a file were tampered with, ffmpeg would connect to an arbitrary URL. Since these files are written with 0o600 permissions and the script runs locally, the risk is low but worth noting.
-
-**3.2.2 `fetchViaJS` in `browser.go:338` passes video URL into JS via `%q`**
+**12. `meetingURL` does not validate input — `models.go:292`**
 
 ```go
-b.page.MustEval(fmt.Sprintf(`async () => { ... fetch(%q) ...}`, videoURL))
+func meetingURL(id string) string { return "https://grain.com/app/meetings/" + id }
 ```
 
-Go's `%q` quotes the string safely for Go, but the resulting string is being injected into JavaScript. If `videoURL` contained specific sequences, this could break the JS context. `%q` happens to produce a valid JS string literal for most inputs, but this is a coincidental safety property, not a deliberate one. Use `json.Marshal(videoURL)` for correct JS escaping.
+All current call sites use pre-validated IDs, but the function itself offers no protection against injection. A `validID` check or documentation of the precondition would harden it.
 
-**3.2.3 `loadDotEnv` does not handle multiline values**
+**13. Config validation is scattered — `main.go:126-168`**
 
-Values with embedded `=` signs (e.g., base64 tokens) parse correctly due to `SplitN(line, "=", 2)`, but values spanning multiple lines are not supported. The 4096-byte line limit is documented, which is sufficient for API tokens.
+19 config fields with validation logic spread across `main()`. A `Config.Validate() error` method would centralize this, make it testable independently, and prevent invalid configs in test construction.
 
----
+**14. Context shadowing in `waitForResults` — `search.go:71`**
 
-## 4. Infrastructure
+```go
+func (b *Browser) waitForResults(ctx context.Context, page *rod.Page) error {
+    ctx, cancel := context.WithTimeout(ctx, resultLoadTimeout)
+```
 
-### 4.1 Dockerfile
+The parameter `ctx` is shadowed by the timeout context. This is correct behavior but can confuse readers. Consider `tCtx, cancel := ...`.
 
-**Strengths:**
-- Multi-stage build minimizes image size
-- Non-root `exporter` user
-- `ROD_BROWSER` env var set correctly for Alpine's Chromium path
-- Dependencies (ffmpeg, jq, bash) included for `convert_hls.sh`
+**15. `extractVideoURL` and `countLinks` are unreadable single-line JS — `browser.go:191,293`**
 
-**Concerns:**
-
-- **No pinned package versions** — `apk add --no-cache chromium` installs whatever version is current. Consider pinning or at least documenting the expected Chromium version range for Rod compatibility.
-- **`COPY convert_hls.sh`** copies the script but doesn't `chmod +x` it. If the file loses its executable bit in transit, it won't be runnable. Add `RUN chmod +x /usr/local/bin/convert_hls.sh` or use `COPY --chmod=755`.
-- **No HEALTHCHECK** — not critical for a CLI, but useful if run as a long-lived `--watch` container.
-- **Alpine 3.20 + Go 1.23** — both are reasonable current versions.
-
-### 4.2 docker-compose.yml
-
-Clean and minimal. The `.env` file is mounted read-only, which is correct. `GRAIN_API_TOKEN` is passed via environment (from the host), which is fine for local development.
-
-**Missing:** No `restart` policy. For `--watch` mode, `restart: unless-stopped` would be appropriate.
-
-### 4.3 Makefile
-
-Correct and minimal. `ldflags` properly inject version/commit. `golangci-lint` gracefully degrades when not installed.
-
-**Missing:** No `make run` target. A convenience target like `run: build; ./graindl $(ARGS)` would be useful during development.
-
-### 4.4 No CI/CD
-
-There are no GitHub Actions workflows. For a project with this level of test coverage, adding a CI pipeline would protect against regressions. A minimal workflow running `make test` and `make vet` on push would be sufficient.
+These pack entire DOM traversal strategies into single-line JavaScript strings. Breaking them into multi-line template strings (like `scrapeTranscript` already does) would improve maintainability.
 
 ---
 
-## 5. Test Suite
+## Ops Engineering Findings
 
-### 5.1 Strengths
+### High
 
-- **Comprehensive coverage:** Tests cover helpers, API parsing, security properties (file permissions, path traversal, URL encoding), integration flows (export pipeline with httptest servers), cancellation, parallel execution, and watch mode.
-- **Security-focused assertions:** Tests explicitly verify 0o600 permissions, relative paths, and ID validation. This is excellent.
-- **Table-driven tests:** Used consistently (`TestCoalesce`, `TestSanitize`, `TestToFloat64`, etc.).
-- **httptest servers:** API tests mock the Grain API correctly, including pagination, error codes, and alternate response shapes.
-- **Edge cases:** Cancellation mid-export, already-cancelled contexts, empty inputs, malformed IDs.
-- **Watch mode tests:** Time-based tests with atomic counters verify multi-cycle behavior.
+**16. No CI/CD pipeline**
 
-### 5.2 Concerns
+No GitHub Actions workflows, no automated quality gates. `make test` and `make lint` exist but run only manually. For a tool that handles auth tokens and browser sessions, automated testing on push is important.
 
-**5.2.1 No tests for browser components**
+**Recommendation:** Add `.github/workflows/ci.yml`:
+```yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23' }
+      - run: go vet ./...
+      - run: go test -count=1 -race ./...
+```
 
-`browser.go` and the browser portions of `search.go` are untested. This is understandable given that Rod requires a real Chromium instance, but it means the video download strategy (4-method fallback chain) and login flow are completely unverified by automated tests. Consider either:
-- Introducing an interface for the browser dependency to enable mocking
-- Adding integration tests behind a build tag (e.g., `//go:build integration`)
+**17. `convert_hls.sh` referenced but absent — `Dockerfile:43`, `export.go:114`**
 
-**5.2.2 Compilation errors in test files**
+```dockerfile
+COPY convert_hls.sh /usr/local/bin/convert_hls.sh
+```
 
-As noted in Section 1, `export_test.go` has interleaved function bodies that prevent compilation. This means the entire test suite currently cannot run.
+This file is referenced in the Dockerfile and in user-facing messages ("Run ./convert_hls.sh to convert HLS streams to MP4"), but does not exist in the repository. The Docker build will fail at this COPY step.
 
-**5.2.3 Test helpers don't use `t.Helper()`**
+**Recommendation:** Create the script, remove the COPY line, or guard it with a conditional.
 
-`newTestScraper` in `scraper_test.go` correctly uses `t.Helper()`, but there's no equivalent helper for the commonly repeated pattern of "create httptest server + create config + create exporter + override baseURL" that appears in every export test. Extracting this would reduce boilerplate significantly.
+**18. No health monitoring in watch mode — `watch.go`**
 
-**5.2.4 Race condition in `TestListRecordingsContextCancel`**
+`--watch` mode runs indefinitely, but there's no:
 
-The test cancels after 50ms and expects an error, but the server responds immediately. Depending on timing, the first page fetch could complete before cancellation, and the test would only fail if the second page fetch is reached. This is a flaky test risk.
+- Healthcheck file/endpoint for Docker `HEALTHCHECK` or external monitoring.
+- Metrics (export count, error rate, cycle duration).
+- Exponential backoff on repeated failures — a cycle that fails immediately retries at the full interval, but there's no circuit breaker for persistent failures.
 
----
-
-## 6. Code Quality
-
-### 6.1 Strengths
-
-- **Consistent error wrapping:** `fmt.Errorf("context: %w", err)` used throughout.
-- **Explicit resource cleanup:** `defer` for `Close()`, `Stop()`, `timer.Stop()`.
-- **Single dependency:** Only `go-rod/rod` as a direct dependency. Everything else is stdlib.
-- **Crypto-random throttle:** Using `crypto/rand` instead of `math/rand` prevents predictable timing patterns.
-- **Audit cross-references:** Code comments like `GO-6`, `SEC-2`, `PERF-1` reference a (missing) `AUDIT.md`.
-
-### 6.2 Concerns
-
-**6.2.1 `AUDIT.md` referenced but does not exist**
-
-The `CLAUDE.md` mentions `AUDIT.md` as a "Security audit report with categorized findings," and code comments reference tags like `GO-1`, `SEC-1`, `PERF-1`. However, `AUDIT.md` is not present in the repository.
-
-**6.2.2 `extractVideoURL` is a single unreadable line**
-
-`browser.go:292` packs an entire DOM traversal strategy into one JavaScript string. This should be broken into a readable multi-line template string or a separate `.js` file.
-
-**6.2.3 `countLinks` similarly unreadable**
-
-`browser.go:190` is a single-line JavaScript evaluation. Same recommendation.
-
-**6.2.4 `ColorHandler.WithGroup` does not concatenate groups**
-
-`logger.go:103-109` stores the group name but never prefixes it to attribute keys. The `slog.Handler` contract expects `WithGroup("g").Handle()` to prefix all subsequent attrs with `g.`. This is a conformance issue, though unlikely to matter since the codebase doesn't use `WithGroup`.
-
-**6.2.5 `firstNonNil` has a subtle behavior with typed nils**
-
-`firstNonNil` checks `v != nil`, but in Go, a typed nil (e.g., `(*GrainRecording)(nil)`) is not `== nil` when passed as `any`. The current callers only pass untyped values from JSON unmarshaling, so this isn't a bug today, but the function name is misleading.
+**Recommendation:** Add a `--healthcheck-file` flag that touch-updates a file after each successful cycle.
 
 ---
 
-## 7. Summary of Recommendations
+### Medium
 
-| Priority | Item | Section |
-|----------|------|---------|
-| **P0** | Fix compilation errors (duplicate fields, unclosed braces, interleaved test bodies) | 1.x |
-| **P1** | Use `json.Marshal` for JS string escaping in `fetchViaJS` | 3.2.2 |
-| **P1** | Create `AUDIT.md` or remove stale references | 6.2.1 |
-| **P2** | Add CI/CD pipeline (GitHub Actions for `make test && make vet`) | 4.4 |
-| **P2** | Introduce a browser interface for testability | 2.2.1, 5.2.1 |
-| **P2** | Pin Chromium version in Dockerfile or document compatibility | 4.1 |
-| **P3** | Add `chmod +x` for `convert_hls.sh` in Dockerfile | 4.1 |
-| **P3** | Add `restart: unless-stopped` to docker-compose for watch mode | 4.2 |
-| **P3** | Break up inline JavaScript strings in `browser.go` | 6.2.2 |
-| **P3** | Fix `ColorHandler.WithGroup` conformance | 6.2.4 |
-| **P3** | Extract test helper for export test setup | 5.2.3 |
+**19. No container resource limits in `docker-compose.yml`**
+
+No `mem_limit`, `cpus`, or `pids_limit`. Chromium is memory-hungry; without limits, a stalled browser can consume all host memory.
+
+**Recommendation:**
+```yaml
+deploy:
+  resources:
+    limits:
+      memory: 2G
+      cpus: '1.0'
+```
+
+**20. No `restart` policy in `docker-compose.yml`**
+
+For `--watch` mode running as a persistent service, `restart: unless-stopped` is appropriate.
+
+**21. No structured logging option**
+
+The `ColorHandler` outputs ANSI-colored text, which is problematic for log aggregation (Splunk, CloudWatch, ELK strip or mangle ANSI escapes). A `--log-format json` flag that swaps to `slog.NewJSONHandler` would enable production log pipelines.
+
+**22. `.dockerignore` is incomplete**
+
+Missing `*_test.go`, `AUDIT.md`, `REVIEW.md`, `CLAUDE.md`, `README.md`, `Makefile`, `.gitignore`, etc. These get copied into the builder stage unnecessarily. While they don't affect the final image, they increase build context transfer time.
+
+**23. Docker image Chromium security**
+
+The Dockerfile correctly uses a non-root `exporter` user, but Chromium in containers typically requires `--no-sandbox` (Rod does this by default). Without a seccomp profile, this increases the attack surface if processing untrusted content.
+
+**Recommendation:** Add Chrome-specific seccomp profile guidance in docker-compose.yml:
+```yaml
+security_opt:
+  - seccomp:chrome.json
+```
+
+---
+
+### Low
+
+**24. Makefile `build` doesn't set `CGO_ENABLED=0`**
+
+The binary links against libc by default. For Alpine Docker deployment this works (musl), but cross-compilation or scratch image deployment would fail. Consider `CGO_ENABLED=0` for static binaries.
+
+**25. No `go mod verify` in build pipeline**
+
+Without this check, a compromised dependency cache won't be detected.
+
+**26. Unpinned Alpine package versions in Dockerfile**
+
+`apk add --no-cache chromium` installs whatever version is current. A Chromium version incompatible with Rod v0.114.8 could break browser automation silently.
+
+---
+
+## Testing Assessment
+
+### Strengths
+
+- **Security-focused assertions:** File permissions (0o600), relative paths, input validation, and injection prevention are explicitly tested throughout.
+- **Good edge case coverage:** Nil inputs, empty strings, cancellation, pre-cancelled contexts, zero values, overwrite vs. skip semantics.
+- **Test isolation:** `t.TempDir()` for all filesystem operations — no cross-test contamination.
+- **No external test dependencies:** Standard `testing` package only.
+- **Watch mode tested without browser:** Clever use of `--id` mode to exercise the watch loop mechanics.
+- **Table-driven tests:** Used consistently (`TestCoalesce`, `TestSanitize`, `TestToFloat64`, `TestLooksLikeUUID`, `TestExtractMeetingID`).
+- **Parallel export correctness:** Tests verify order preservation, cancellation, and nil-slot compaction.
+- **Regression guards:** `TestNormalizeHighlightZeroTimestamp` and `TestParseHighlightsWrapperWithTitle` are clearly written to prevent specific regressions.
+
+### Gaps
+
+- **No browser tests:** `browser.go` (594 lines) and the browser portions of `search.go` are entirely untested. The video download strategy (4-method fallback chain), login flow, transcript scraping, and highlight extraction have zero automated coverage. Consider introducing an interface for the browser dependency to enable mocking, or adding integration tests behind a `//go:build integration` tag.
+
+- **No fuzz testing:** `sanitize`, `loadDotEnv`, `extractMeetingID`, and `parseHighlights` are parsing-heavy functions that would benefit from `testing.F` fuzz targets. Given the security sensitivity of `sanitize` (filename safety), this is especially valuable.
+
+- **No `t.Parallel()`:** Tests run sequentially within the package. For a 165-second test suite (largely due to watch tests' wall-clock waits), parallelizing non-conflicting tests would meaningfully reduce CI time.
+
+- **Watch test timing sensitivity:** Tests like `TestRunWatchMultipleCycles` depend on goroutine scheduling within 500ms windows and use wall-clock assertions. The code handles slow CI gracefully with log messages, but these tests will flake under load. Consider using explicit synchronization (channels, waitgroups) instead of time-based expectations.
+
+- **`formatDuration` string branch untested:** The `default` case in `formatDuration` (`format_test.go`) handles `string` input via `fmt.Sprintf("%v", v)`, but no test covers this branch.
+
+---
+
+## Architecture Observations
+
+### What works well
+
+1. **Flat package layout** — For a single-binary CLI of this size (~1.5K lines of application code), a flat `main` package avoids premature abstraction. Every type and function is in scope, reducing indirection.
+
+2. **Context propagation** — `context.Context` is threaded correctly through all operations, enabling clean shutdown via `signal.NotifyContext`. The `Throttle.Wait` method's `select` on both timer and `ctx.Done()` is correct.
+
+3. **Throttle design** — Using `crypto/rand` instead of `math/rand` prevents detectable patterns in request timing. The independent instances for exporter and scraper throttles are a thoughtful design.
+
+4. **API response flexibility** — The `coalesce` / `firstNonNil` / `coalesceSlice` helpers and multi-field JSON tags on `Highlight` handle API instability gracefully without overcomplicating the type system.
+
+5. **Security-first file operations** — `writeJSON` / `writeFile` enforce 0o600 everywhere, and `ensureDirPrivate` is used for session data. `fixPerms` in `audio.go` catches ffmpeg's default umask. This is consistently applied and well-tested.
+
+6. **Export manifest design** — Relative paths, typed status codes, and per-meeting error messages make the manifest both machine-parseable and debuggable.
+
+### What could be improved
+
+1. **Browser lifecycle management** — The single shared `Browser` with a single `Page` is the biggest architectural constraint. It prevents safe parallelism for browser operations and makes the scraping methods fragile to navigation races.
+
+2. **Error propagation** — Several write failures are silently swallowed (`writeTranscript`, `writeHighlights`, HLS URL fallback writes). The export result should track partial failures explicitly.
+
+3. **Testability** — The tight coupling between `Exporter` and `Browser` (via `lazyBrowser`) makes it impossible to test export logic involving browser calls without a real Chromium instance. An interface like `PageScraper` or `VideoDownloader` would allow mock injection in tests, which would dramatically improve coverage of the export pipeline.
+
+4. **Documentation drift** — `CLAUDE.md` describes an architecture with API-based discovery, `scraper.go`, token-based auth, response size limits, and pagination — none of which exist in the current code. This will mislead anyone reading the docs before the code.
+
+---
+
+## Summary of Recommendations by Priority
+
+| Priority | # | Finding | Effort |
+|----------|---|---------|--------|
+| Critical | 1 | Fix shared `*rod.Page` for parallel mode | Medium |
+| High | 2 | Guard `MustEval` calls with error handling | Medium |
+| High | 3 | Bound `fetchViaJS` memory usage | Medium |
+| High | 16 | Add CI/CD pipeline | Low |
+| High | 17 | Fix or remove `convert_hls.sh` COPY in Dockerfile | Low |
+| High | 18 | Add healthcheck for watch mode | Medium |
+| Medium | 4 | Fix `ColorHandler.WithGroup` conformance | Low |
+| Medium | 5 | Update CLAUDE.md to match actual codebase | Low |
+| Medium | 6 | Log/track write failures in export pipeline | Low |
+| Medium | 19 | Add Docker resource limits | Low |
+| Medium | 20 | Add restart policy to docker-compose | Low |
+| Medium | 21 | Add structured JSON logging option | Low |
+| Low | 11 | Fix Unicode truncation in `sanitize` | Low |
+| Low | 13 | Centralize config validation | Low |
+| Low | 15 | Reformat inline JS in browser.go | Low |
+| Low | 24 | Set `CGO_ENABLED=0` in Makefile | Low |
