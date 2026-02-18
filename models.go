@@ -36,6 +36,16 @@ type Config struct {
 	LogFormat       string // "", "json"
 	ICloud          bool   // --icloud: copy exports to iCloud Drive
 	ICloudPath      string // --icloud-path: custom iCloud Drive directory (auto-detected on macOS)
+
+	// Google Drive upload
+	GDrive            bool
+	GDriveFolderID    string
+	GDriveCredentials string
+	GDriveTokenFile   string
+	GDriveCleanLocal  bool
+	GDriveServiceAcct bool
+	GDriveConflict    string // "local-wins" (default), "skip", "newer-wins"
+	GDriveVerify      bool
 }
 
 // ── Export Types ─────────────────────────────────────────────────────────────
@@ -61,6 +71,10 @@ type ExportResult struct {
 	AudioPath       string            `json:"audio_path,omitempty"`
 	AudioMethod     string            `json:"audio_method,omitempty"`
 	ErrorMsg        string            `json:"error_msg,omitempty"`
+	DriveUploaded   bool              `json:"drive_uploaded,omitempty"`
+	DriveSkipped    int               `json:"drive_skipped,omitempty"`
+	DriveUpdated    int               `json:"drive_updated,omitempty"`
+	DriveError      string            `json:"drive_error,omitempty"`
 }
 
 type ExportManifest struct {

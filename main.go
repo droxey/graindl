@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -112,6 +113,14 @@ func main() {
 	flag.StringVar(&cfg.LogFormat, "log-format", envGet(dotenv, "GRAIN_LOG_FORMAT"), "Log format: color (default), json")
 	flag.BoolVar(&cfg.ICloud, "icloud", envBool(dotenv, "GRAIN_ICLOUD"), "Copy exports to iCloud Drive")
 	flag.StringVar(&cfg.ICloudPath, "icloud-path", envGet(dotenv, "GRAIN_ICLOUD_PATH"), "Custom iCloud Drive path (auto-detected on macOS)")
+	flag.BoolVar(&cfg.GDrive, "gdrive", envBool(dotenv, "GRAIN_GDRIVE"), "Enable Google Drive upload after export")
+	flag.StringVar(&cfg.GDriveFolderID, "gdrive-folder-id", envGet(dotenv, "GRAIN_GDRIVE_FOLDER_ID"), "Target Google Drive folder ID")
+	flag.StringVar(&cfg.GDriveCredentials, "gdrive-credentials", envGet(dotenv, "GRAIN_GDRIVE_CREDENTIALS"), "Path to Google OAuth2/service-account credentials JSON")
+	flag.StringVar(&cfg.GDriveTokenFile, "gdrive-token", envGet(dotenv, "GRAIN_GDRIVE_TOKEN"), "Path to cached OAuth2 token file")
+	flag.BoolVar(&cfg.GDriveCleanLocal, "gdrive-clean-local", envBool(dotenv, "GRAIN_GDRIVE_CLEAN_LOCAL"), "Remove local files after successful Drive upload")
+	flag.BoolVar(&cfg.GDriveServiceAcct, "gdrive-service-account", envBool(dotenv, "GRAIN_GDRIVE_SERVICE_ACCT"), "Use service account authentication")
+	flag.StringVar(&cfg.GDriveConflict, "gdrive-conflict", coalesce(envGet(dotenv, "GRAIN_GDRIVE_CONFLICT"), "local-wins"), "Conflict resolution: local-wins (default), skip, newer-wins")
+	flag.BoolVar(&cfg.GDriveVerify, "gdrive-verify", envBool(dotenv, "GRAIN_GDRIVE_VERIFY"), "Force Drive-side verification before uploading")
 	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
 	flag.Parse()
 
@@ -189,6 +198,26 @@ func main() {
 			slog.Error("Invalid iCloud path", "error", err)
 			os.Exit(1)
 		}
+  }
+	if cfg.GDrive {
+		if cfg.GDriveFolderID == "" {
+			slog.Error("--gdrive requires --gdrive-folder-id")
+			os.Exit(1)
+		}
+		if cfg.GDriveCredentials == "" {
+			slog.Error("--gdrive requires --gdrive-credentials")
+			os.Exit(1)
+		}
+		switch cfg.GDriveConflict {
+		case "local-wins", "skip", "newer-wins":
+			// valid
+		default:
+			slog.Error("Invalid --gdrive-conflict. Must be 'local-wins', 'skip', or 'newer-wins'.")
+			os.Exit(1)
+		}
+		if cfg.GDriveTokenFile == "" {
+			cfg.GDriveTokenFile = filepath.Join(cfg.SessionDir, "gdrive-token.json")
+		}
 	}
 
 	slog.Info(fmt.Sprintf("graindl %s", version))
@@ -213,7 +242,10 @@ func main() {
 		slog.Info(fmt.Sprintf("Format: %s", cfg.OutputFormat))
 	}
 	if cfg.ICloud {
-		slog.Info(fmt.Sprintf("iCloud: %s", cfg.ICloudPath))
+    slog.Info(fmt.Sprintf("iCloud: %s", cfg.ICloudPath))
+  }
+	if cfg.GDrive {
+		slog.Info(fmt.Sprintf("Google Drive: enabled (folder=%s, conflict=%s)", cfg.GDriveFolderID, cfg.GDriveConflict))
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
