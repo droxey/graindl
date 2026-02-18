@@ -25,7 +25,7 @@ func TestRunWatchStopsOnCancel(t *testing.T) {
 		MinDelaySec:   0,
 		MaxDelaySec:   0.001,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestRunWatchMultipleCycles(t *testing.T) {
 		MinDelaySec:   0,
 		MaxDelaySec:   0.001,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestRunWatchSkipsAlreadyExported(t *testing.T) {
 		MinDelaySec:   0,
 		MaxDelaySec:   0.001,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestRunWatchImmediateCancelBeforeFirstCycle(t *testing.T) {
 		MinDelaySec:   0,
 		MaxDelaySec:   0.001,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestRunWatchManifestResetBetweenCycles(t *testing.T) {
 		MinDelaySec:   0,
 		MaxDelaySec:   0.001,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}

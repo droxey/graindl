@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -25,6 +26,11 @@ type Storage interface {
 	EnsureDir(relPath string) error
 	// AbsPath returns the absolute filesystem path for relPath.
 	AbsPath(relPath string) string
+	// SyncExternalFile syncs an externally-written file (e.g., browser
+	// video download, ffmpeg audio extraction) to any secondary storage
+	// targets. The file must already exist at AbsPath(relPath).
+	// No-op for backends without secondary targets. Non-fatal on failure.
+	SyncExternalFile(relPath string)
 	// Close persists any internal state (e.g., sync state). Called at shutdown.
 	Close() error
 }
@@ -75,7 +81,8 @@ func (s *LocalStorage) AbsPath(relPath string) string {
 	return filepath.Join(s.root, relPath)
 }
 
-func (s *LocalStorage) Close() error { return nil }
+func (s *LocalStorage) SyncExternalFile(_ string) {} // no secondary target
+func (s *LocalStorage) Close() error               { return nil }
 
 // Root returns the storage root directory.
 func (s *LocalStorage) Root() string { return s.root }
@@ -108,15 +115,20 @@ func NewSyncState() *SyncState {
 }
 
 // loadSyncState reads a sync state file from disk.
-// Returns a fresh state if the file does not exist or is invalid.
+// Returns a fresh state if the file does not exist. Logs a warning if the
+// file exists but contains corrupt JSON, rather than silently resetting.
 func loadSyncState(path string) *SyncState {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return NewSyncState()
 	}
 	var state SyncState
-	if err := json.Unmarshal(data, &state); err != nil || state.Files == nil {
+	if err := json.Unmarshal(data, &state); err != nil {
+		slog.Warn("Corrupt sync state file, resetting", "path", path, "error", err)
 		return NewSyncState()
+	}
+	if state.Files == nil {
+		state.Files = make(map[string]*SyncFileEntry)
 	}
 	return &state
 }

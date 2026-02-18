@@ -103,6 +103,15 @@ func (s *ICloudStorage) AbsPath(relPath string) string {
 	return s.local.AbsPath(relPath)
 }
 
+// SyncExternalFile copies an externally-written file to iCloud Drive.
+// Used for files written by the browser or ffmpeg that bypass the
+// Storage.WriteFile path. Non-fatal on failure.
+func (s *ICloudStorage) SyncExternalFile(relPath string) {
+	if err := s.CopyFileToICloud(relPath); err != nil {
+		slog.Warn("iCloud copy failed", "path", relPath, "error", err)
+	}
+}
+
 // Close persists the sync state to the iCloud directory.
 func (s *ICloudStorage) Close() error {
 	s.mu.Lock()

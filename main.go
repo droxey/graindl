@@ -251,7 +251,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	exp, err := NewExporter(&cfg)
+	exp, err := NewExporter(ctx, &cfg)
 	if err != nil {
 		slog.Error("Init failed", "error", err)
 		os.Exit(1)

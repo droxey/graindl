@@ -38,7 +38,7 @@ func TestExportOneMinimalMetadata(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestExportOneSkipExisting(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestExportOneOverwrite(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestRunSingleMeeting(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestRunSingleMeetingInvalidID(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestRunSingleMeetingSkipsExisting(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -474,7 +474,7 @@ func TestRunSingleMeetingOverwrite(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestRunSingleMeetingCancellation(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestDryRunSingleMeeting(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -585,7 +585,7 @@ func TestDryRunSingleMeetingInvalidID(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -603,7 +603,7 @@ func TestDryRunSingleMeetingInvalidID(t *testing.T) {
 func TestDryRunPrintDryRunOutput(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{OutputDir: dir, MinDelaySec: 0, MaxDelaySec: 0.01}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -656,7 +656,7 @@ func TestExportOneAudioOnlyMode(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -701,7 +701,7 @@ func TestExportOneAudioOnlyAndSkipVideoMutualExclusion(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -726,7 +726,7 @@ func TestRunSingleMeetingAudioOnly(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -768,7 +768,7 @@ func TestExportParallelDirect(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -811,7 +811,7 @@ func TestExportParallelPreservesOrder(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -846,7 +846,7 @@ func TestExportParallelCancellation(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -878,7 +878,7 @@ func TestExportSequentialBasic(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -908,7 +908,7 @@ func TestExportSequentialSkipsExisting(t *testing.T) {
 		MinDelaySec: 0,
 		MaxDelaySec: 0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}

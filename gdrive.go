@@ -740,18 +740,11 @@ func (d *DriveUploader) EnsureFolder(ctx context.Context, relDir string) (string
 		}
 		d.mu.Unlock()
 
-		// Check if folder already exists on Drive.
-		list, err := d.listFiles(ctx, parentID, "")
+		// Check if folder already exists on Drive using a targeted query
+		// to avoid pagination issues with listFiles (100-item pages).
+		folderID, err := d.findFolder(ctx, parentID, part)
 		if err != nil {
-			return "", fmt.Errorf("list folders: %w", err)
-		}
-
-		var folderID string
-		for _, f := range list.Files {
-			if f.Name == part && f.MIMEType == "application/vnd.google-apps.folder" {
-				folderID = f.ID
-				break
-			}
+			return "", fmt.Errorf("find folder %q: %w", part, err)
 		}
 
 		if folderID == "" {
@@ -772,12 +765,49 @@ func (d *DriveUploader) EnsureFolder(ctx context.Context, relDir string) (string
 	return parentID, nil
 }
 
+// findFolder searches for an existing folder by name within a parent folder.
+// Uses a targeted Drive API query instead of listing all children, avoiding
+// pagination issues when parents contain more than 100 items.
+func (d *DriveUploader) findFolder(ctx context.Context, parentID, name string) (string, error) {
+	nameEscaped := strings.ReplaceAll(name, "'", "\\'")
+	q := url.QueryEscape(fmt.Sprintf("'%s' in parents and name = '%s' and mimeType = 'application/vnd.google-apps.folder' and trashed = false", parentID, nameEscaped))
+	fields := url.QueryEscape("files(id)")
+	apiURL := fmt.Sprintf("%s/files?q=%s&fields=%s&pageSize=1", driveAPIBase, q, fields)
+
+	resp, err := d.driveRequest(ctx, "GET", apiURL, nil, "")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body := readErrorBody(resp.Body)
+		return "", fmt.Errorf("find folder failed (%d): %s", resp.StatusCode, body)
+	}
+
+	var list driveFileList
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return "", err
+	}
+	if len(list.Files) > 0 {
+		return list.Files[0].ID, nil
+	}
+	return "", nil
+}
+
 // ── Core Upload ─────────────────────────────────────────────────────────────
 
 // Upload uploads a single file to Google Drive with sync-aware logic.
 // Returns the Drive file ID.
 func (d *DriveUploader) Upload(ctx context.Context, localPath, relPath string) (string, error) {
 	action, entry := d.shouldUpload(localPath, relPath)
+	return d.uploadWithHint(ctx, localPath, relPath, action, entry)
+}
+
+// uploadWithHint performs the upload using a pre-computed action/entry pair,
+// avoiding redundant shouldUpload (and MD5) calls when the caller already
+// knows the decision (e.g. UploadExportResult).
+func (d *DriveUploader) uploadWithHint(ctx context.Context, localPath, relPath, action string, entry *SyncEntry) (string, error) {
 	if action == "skip" {
 		slog.Debug("Drive upload skipped (in sync)", "path", relPath)
 		return "", nil
@@ -881,7 +911,7 @@ func (d *DriveUploader) UploadExportResult(ctx context.Context, outputDir string
 			continue
 		}
 
-		action, _ := d.shouldUpload(localPath, relPath)
+		action, entry := d.shouldUpload(localPath, relPath)
 		switch action {
 		case "skip":
 			stats.Skipped++
@@ -892,7 +922,8 @@ func (d *DriveUploader) UploadExportResult(ctx context.Context, outputDir string
 			stats.Created++
 		}
 
-		if _, err := d.Upload(ctx, localPath, relPath); err != nil {
+		// Pass pre-computed action/entry to avoid redundant MD5 in Upload.
+		if _, err := d.uploadWithHint(ctx, localPath, relPath, action, entry); err != nil {
 			return stats, fmt.Errorf("upload %s: %w", relPath, err)
 		}
 	}
