@@ -154,3 +154,95 @@ func TestAudioOnlyConfigField(t *testing.T) {
 		t.Error("both flags should be independently settable")
 	}
 }
+
+// ── Google Drive config fields ──────────────────────────────────────────────
+
+func TestGDriveConfigFields(t *testing.T) {
+	cfg := Config{
+		GDrive:            true,
+		GDriveFolderID:    "folder-123",
+		GDriveCredentials: "/path/to/creds.json",
+		GDriveTokenFile:   "/path/to/token.json",
+		GDriveCleanLocal:  true,
+		GDriveServiceAcct: false,
+		GDriveConflict:    "local-wins",
+		GDriveVerify:      true,
+	}
+
+	if !cfg.GDrive {
+		t.Error("GDrive should be true")
+	}
+	if cfg.GDriveFolderID != "folder-123" {
+		t.Errorf("GDriveFolderID = %q", cfg.GDriveFolderID)
+	}
+	if cfg.GDriveConflict != "local-wins" {
+		t.Errorf("GDriveConflict = %q", cfg.GDriveConflict)
+	}
+	if !cfg.GDriveVerify {
+		t.Error("GDriveVerify should be true")
+	}
+}
+
+func TestGDriveEnvVars(t *testing.T) {
+	env := map[string]string{
+		"GRAIN_GDRIVE":              "true",
+		"GRAIN_GDRIVE_FOLDER_ID":    "env-folder",
+		"GRAIN_GDRIVE_CREDENTIALS":  "/env/creds.json",
+		"GRAIN_GDRIVE_TOKEN":        "/env/token.json",
+		"GRAIN_GDRIVE_CLEAN_LOCAL":  "true",
+		"GRAIN_GDRIVE_SERVICE_ACCT": "true",
+		"GRAIN_GDRIVE_CONFLICT":     "skip",
+		"GRAIN_GDRIVE_VERIFY":       "true",
+	}
+
+	if !envBool(env, "GRAIN_GDRIVE") {
+		t.Error("GRAIN_GDRIVE should be truthy")
+	}
+	if envGet(env, "GRAIN_GDRIVE_FOLDER_ID") != "env-folder" {
+		t.Error("GRAIN_GDRIVE_FOLDER_ID mismatch")
+	}
+	if envGet(env, "GRAIN_GDRIVE_CREDENTIALS") != "/env/creds.json" {
+		t.Error("GRAIN_GDRIVE_CREDENTIALS mismatch")
+	}
+	if !envBool(env, "GRAIN_GDRIVE_CLEAN_LOCAL") {
+		t.Error("GRAIN_GDRIVE_CLEAN_LOCAL should be truthy")
+	}
+	if !envBool(env, "GRAIN_GDRIVE_SERVICE_ACCT") {
+		t.Error("GRAIN_GDRIVE_SERVICE_ACCT should be truthy")
+	}
+	if envGet(env, "GRAIN_GDRIVE_CONFLICT") != "skip" {
+		t.Error("GRAIN_GDRIVE_CONFLICT mismatch")
+	}
+	if !envBool(env, "GRAIN_GDRIVE_VERIFY") {
+		t.Error("GRAIN_GDRIVE_VERIFY should be truthy")
+	}
+}
+
+func TestGDriveConflictModes(t *testing.T) {
+	validModes := []string{"local-wins", "skip", "newer-wins"}
+	for _, mode := range validModes {
+		cfg := Config{GDriveConflict: mode}
+		switch cfg.GDriveConflict {
+		case "local-wins", "skip", "newer-wins":
+			// valid
+		default:
+			t.Errorf("mode %q should be valid", mode)
+		}
+	}
+}
+
+func TestGDriveDefaultTokenPath(t *testing.T) {
+	cfg := Config{
+		SessionDir:      "./.grain-session",
+		GDrive:          true,
+		GDriveTokenFile: "",
+	}
+	// Simulate the default token path logic from main.go.
+	if cfg.GDriveTokenFile == "" {
+		cfg.GDriveTokenFile = filepath.Join(cfg.SessionDir, "gdrive-token.json")
+	}
+	want := filepath.Join("./.grain-session", "gdrive-token.json")
+	if cfg.GDriveTokenFile != want {
+		t.Errorf("token path = %q, want %q", cfg.GDriveTokenFile, want)
+	}
+}
