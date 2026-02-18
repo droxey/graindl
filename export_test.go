@@ -156,12 +156,12 @@ func TestBuildScrapedMetadataPreservesRefTitle(t *testing.T) {
 
 func TestWriteTranscript(t *testing.T) {
 	dir := t.TempDir()
-	e := &Exporter{cfg: &Config{OutputDir: dir}}
+	e := &Exporter{cfg: &Config{OutputDir: dir}, storage: NewLocalStorage(dir)}
 	r := &ExportResult{TranscriptPaths: make(map[string]string)}
-	base := filepath.Join(dir, "test-id")
+	relBase := "test-id"
 
 	scraped := &MeetingPageData{Transcript: "Hello world\n\nThis is a transcript."}
-	e.writeTranscript(scraped, "test-id", base, r)
+	e.writeTranscript(scraped, "test-id", relBase, r)
 
 	if r.TranscriptPaths["text"] == "" {
 		t.Fatal("TranscriptPaths[text] should be set")
@@ -186,11 +186,10 @@ func TestWriteTranscript(t *testing.T) {
 
 func TestWriteTranscriptNilScraped(t *testing.T) {
 	dir := t.TempDir()
-	e := &Exporter{cfg: &Config{OutputDir: dir}}
+	e := &Exporter{cfg: &Config{OutputDir: dir}, storage: NewLocalStorage(dir)}
 	r := &ExportResult{TranscriptPaths: make(map[string]string)}
-	base := filepath.Join(dir, "test-id")
 
-	e.writeTranscript(nil, "test-id", base, r)
+	e.writeTranscript(nil, "test-id", "test-id", r)
 
 	if len(r.TranscriptPaths) != 0 {
 		t.Errorf("TranscriptPaths should be empty for nil scraped data, got %v", r.TranscriptPaths)
@@ -199,11 +198,10 @@ func TestWriteTranscriptNilScraped(t *testing.T) {
 
 func TestWriteTranscriptEmptyText(t *testing.T) {
 	dir := t.TempDir()
-	e := &Exporter{cfg: &Config{OutputDir: dir}}
+	e := &Exporter{cfg: &Config{OutputDir: dir}, storage: NewLocalStorage(dir)}
 	r := &ExportResult{TranscriptPaths: make(map[string]string)}
-	base := filepath.Join(dir, "test-id")
 
-	e.writeTranscript(&MeetingPageData{Transcript: ""}, "test-id", base, r)
+	e.writeTranscript(&MeetingPageData{Transcript: ""}, "test-id", "test-id", r)
 
 	if len(r.TranscriptPaths) != 0 {
 		t.Errorf("TranscriptPaths should be empty for blank transcript, got %v", r.TranscriptPaths)
@@ -214,9 +212,9 @@ func TestWriteTranscriptEmptyText(t *testing.T) {
 
 func TestWriteHighlights(t *testing.T) {
 	dir := t.TempDir()
-	e := &Exporter{cfg: &Config{OutputDir: dir}}
+	e := &Exporter{cfg: &Config{OutputDir: dir}, storage: NewLocalStorage(dir)}
 	r := &ExportResult{TranscriptPaths: make(map[string]string)}
-	base := filepath.Join(dir, "hl-test")
+	relBase := "hl-test"
 
 	scraped := &MeetingPageData{
 		Highlights: []Highlight{
@@ -224,7 +222,7 @@ func TestWriteHighlights(t *testing.T) {
 			{ID: "h2", Text: "Action item: review PR", SpeakerName: "Bob"},
 		},
 	}
-	e.writeHighlights(scraped, "hl-test", base, r)
+	e.writeHighlights(scraped, "hl-test", relBase, r)
 
 	if r.HighlightsPath == "" {
 		t.Fatal("HighlightsPath should be set")
@@ -269,11 +267,10 @@ func TestWriteHighlights(t *testing.T) {
 
 func TestWriteHighlightsNilScraped(t *testing.T) {
 	dir := t.TempDir()
-	e := &Exporter{cfg: &Config{OutputDir: dir}}
+	e := &Exporter{cfg: &Config{OutputDir: dir}, storage: NewLocalStorage(dir)}
 	r := &ExportResult{TranscriptPaths: make(map[string]string)}
-	base := filepath.Join(dir, "test-id")
 
-	e.writeHighlights(nil, "test-id", base, r)
+	e.writeHighlights(nil, "test-id", "test-id", r)
 
 	if r.HighlightsPath != "" {
 		t.Errorf("HighlightsPath should be empty for nil scraped data, got %q", r.HighlightsPath)
@@ -282,11 +279,10 @@ func TestWriteHighlightsNilScraped(t *testing.T) {
 
 func TestWriteHighlightsEmpty(t *testing.T) {
 	dir := t.TempDir()
-	e := &Exporter{cfg: &Config{OutputDir: dir}}
+	e := &Exporter{cfg: &Config{OutputDir: dir}, storage: NewLocalStorage(dir)}
 	r := &ExportResult{TranscriptPaths: make(map[string]string)}
-	base := filepath.Join(dir, "test-id")
 
-	e.writeHighlights(&MeetingPageData{Highlights: nil}, "test-id", base, r)
+	e.writeHighlights(&MeetingPageData{Highlights: nil}, "test-id", "test-id", r)
 
 	if r.HighlightsPath != "" {
 		t.Errorf("HighlightsPath should be empty for no highlights, got %q", r.HighlightsPath)
