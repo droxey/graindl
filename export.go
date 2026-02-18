@@ -24,22 +24,48 @@ type Exporter struct {
 	throttle     *Throttle
 	manifest     *ExportManifest
 	searchFilter map[string]bool // nil = export all, non-nil = only matched IDs
+	drive        *DriveUploader  // nil when --gdrive is not set
 }
 
 func NewExporter(cfg *Config) (*Exporter, error) {
-	return &Exporter{
+	exp := &Exporter{
 		cfg: cfg,
 		throttle: &Throttle{
 			Min: time.Duration(cfg.MinDelaySec * float64(time.Second)),
 			Max: time.Duration(cfg.MaxDelaySec * float64(time.Second)),
 		},
 		manifest: &ExportManifest{ExportedAt: time.Now().UTC().Format(time.RFC3339)},
-	}, nil
+	}
+
+	if cfg.GDrive {
+		d, err := NewDriveUploader(context.Background(), cfg)
+		if err != nil {
+			return nil, fmt.Errorf("google drive init: %w", err)
+		}
+		exp.drive = d
+	}
+
+	return exp, nil
 }
 
 func (e *Exporter) Run(ctx context.Context) error {
 	if err := ensureDir(e.cfg.OutputDir); err != nil {
 		return fmt.Errorf("output dir: %w", err)
+	}
+
+	// Drive verification before export (optional).
+	if e.drive != nil && e.cfg.GDriveVerify {
+		report, err := e.drive.Verify(ctx, e.cfg.OutputDir)
+		if err != nil {
+			slog.Warn("Drive verification failed", "error", err)
+		} else {
+			slog.Info("Drive verification complete",
+				"in_sync", report.InSync,
+				"re_uploaded", report.ReUploaded,
+				"deleted_remotely", report.DeletedRemotely,
+				"modified_remotely", report.ModifiedRemotely,
+				"untracked", report.Untracked)
+		}
 	}
 
 	// Single meeting mode: --id skips discovery entirely.
@@ -100,9 +126,20 @@ func (e *Exporter) Run(ctx context.Context) error {
 		e.exportSequential(ctx, meetings)
 	}
 
-	if err := writeJSON(filepath.Join(e.cfg.OutputDir, "_export-manifest.json"), e.manifest); err != nil {
+	manifestPath := filepath.Join(e.cfg.OutputDir, "_export-manifest.json")
+	if err := writeJSON(manifestPath, e.manifest); err != nil {
 		slog.Error("Manifest write failed", "error", err)
 	}
+
+	if e.drive != nil {
+		if err := e.drive.UploadManifest(ctx, e.cfg.OutputDir, manifestPath); err != nil {
+			slog.Warn("Drive manifest upload failed", "error", err)
+		}
+		if err := e.drive.saveSyncState(); err != nil {
+			slog.Warn("Failed to save Drive sync state", "error", err)
+		}
+	}
+
 	slog.Info("Done",
 		"ok", e.manifest.OK,
 		"skipped", e.manifest.Skipped,
@@ -274,8 +311,18 @@ func (e *Exporter) runSingle(ctx context.Context) error {
 		e.manifest.Errors++
 	}
 
-	if err := writeJSON(filepath.Join(e.cfg.OutputDir, "_export-manifest.json"), e.manifest); err != nil {
+	manifestPath := filepath.Join(e.cfg.OutputDir, "_export-manifest.json")
+	if err := writeJSON(manifestPath, e.manifest); err != nil {
 		slog.Error("Manifest write failed", "error", err)
+	}
+
+	if e.drive != nil {
+		if err := e.drive.UploadManifest(ctx, e.cfg.OutputDir, manifestPath); err != nil {
+			slog.Warn("Drive manifest upload failed", "error", err)
+		}
+		if err := e.drive.saveSyncState(); err != nil {
+			slog.Warn("Failed to save Drive sync state", "error", err)
+		}
 	}
 
 	slog.Info("Done",
@@ -396,6 +443,25 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 	if r.Status == "" {
 		r.Status = "ok"
 	}
+
+	// Upload to Google Drive (if enabled).
+	if e.drive != nil {
+		stats, err := e.drive.UploadExportResult(ctx, e.cfg.OutputDir, r)
+		if err != nil {
+			slog.Warn("Drive upload failed", "id", ref.ID, "error", err)
+			r.DriveError = err.Error()
+		} else {
+			r.DriveUploaded = true
+			r.DriveSkipped = stats.Skipped
+			r.DriveUpdated = stats.Updated
+			slog.Info("Synced to Google Drive", "id", ref.ID,
+				"created", stats.Created, "updated", stats.Updated, "skipped", stats.Skipped)
+			if e.cfg.GDriveCleanLocal {
+				e.cleanLocalFiles(r)
+			}
+		}
+	}
+
 	return r
 }
 
@@ -576,6 +642,27 @@ func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, audioPath str
 	}
 
 	slog.Warn("Audio extraction failed", "id", ref.ID)
+}
+
+// cleanLocalFiles removes local files after successful Drive upload.
+func (e *Exporter) cleanLocalFiles(r *ExportResult) {
+	paths := collectResultPaths(r)
+	for _, relPath := range paths {
+		if relPath == "" {
+			continue
+		}
+		p := filepath.Join(e.cfg.OutputDir, relPath)
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			slog.Warn("Failed to remove local file", "path", p, "error", err)
+		} else if err == nil {
+			slog.Debug("Removed local file", "path", relPath)
+		}
+	}
+	// Try to remove empty date directory.
+	if r.DateDir != "" {
+		dir := filepath.Join(e.cfg.OutputDir, r.DateDir)
+		_ = os.Remove(dir) // only succeeds if empty
+	}
 }
 
 func (e *Exporter) relPath(abs string) string {
