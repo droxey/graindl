@@ -122,13 +122,21 @@ func loadSyncState(path string) *SyncState {
 }
 
 // saveSyncState writes the sync state to disk with 0o600 permissions.
+// Uses atomic temp-file + rename to avoid corruption on crash.
 func saveSyncState(path string, state *SyncState) error {
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal sync state: %w", err)
 	}
-	return os.WriteFile(path, data, 0o600)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("write temp sync state: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("rename sync state: %w", err)
+	}
+	return nil
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

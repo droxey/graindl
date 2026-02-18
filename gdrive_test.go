@@ -76,16 +76,16 @@ func TestDetectMIMEUnknown(t *testing.T) {
 	}
 }
 
-// ── SyncState Load/Save ─────────────────────────────────────────────────────
+// ── DriveSyncState Load/Save ─────────────────────────────────────────────────
 
-func TestSyncState_LoadSave(t *testing.T) {
+func TestDriveSyncState_LoadSave(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "sync.json")
 
 	// Start empty.
-	state, err := loadSyncState(statePath)
+	state, err := loadDriveSyncState(statePath)
 	if err != nil {
-		t.Fatalf("loadSyncState: %v", err)
+		t.Fatalf("loadDriveSyncState: %v", err)
 	}
 	if state.Version != 1 {
 		t.Errorf("Version = %d, want 1", state.Version)
@@ -109,9 +109,9 @@ func TestSyncState_LoadSave(t *testing.T) {
 	writeFile(statePath, data)
 
 	// Reload.
-	loaded, err := loadSyncState(statePath)
+	loaded, err := loadDriveSyncState(statePath)
 	if err != nil {
-		t.Fatalf("loadSyncState after save: %v", err)
+		t.Fatalf("loadDriveSyncState after save: %v", err)
 	}
 	if loaded.FolderID != "folder-123" {
 		t.Errorf("FolderID = %q, want folder-123", loaded.FolderID)
@@ -131,10 +131,10 @@ func TestSyncState_LoadSave(t *testing.T) {
 	}
 }
 
-func TestSyncState_MissingFile(t *testing.T) {
-	state, err := loadSyncState("/nonexistent/gdrive-sync.json")
+func TestDriveSyncState_MissingFile(t *testing.T) {
+	state, err := loadDriveSyncState("/nonexistent/gdrive-sync.json")
 	if err != nil {
-		t.Fatalf("loadSyncState should not error on missing file: %v", err)
+		t.Fatalf("loadDriveSyncState should not error on missing file: %v", err)
 	}
 	if state.Version != 1 {
 		t.Errorf("Version = %d, want 1", state.Version)
@@ -144,12 +144,12 @@ func TestSyncState_MissingFile(t *testing.T) {
 	}
 }
 
-func TestSyncState_FolderIDChange(t *testing.T) {
+func TestDriveSyncState_FolderIDChange(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "sync.json")
 
 	// Save state with folder-A.
-	state := &SyncState{
+	state := &DriveSyncState{
 		Version:  1,
 		FolderID: "folder-A",
 		Files: map[string]*SyncEntry{
@@ -160,15 +160,15 @@ func TestSyncState_FolderIDChange(t *testing.T) {
 	writeFile(statePath, data)
 
 	// Load and detect folder change.
-	loaded, err := loadSyncState(statePath)
+	loaded, err := loadDriveSyncState(statePath)
 	if err != nil {
-		t.Fatalf("loadSyncState: %v", err)
+		t.Fatalf("loadDriveSyncState: %v", err)
 	}
 
 	// Simulate NewDriveUploader folder ID change detection.
 	newFolderID := "folder-B"
 	if loaded.FolderID != "" && loaded.FolderID != newFolderID {
-		loaded = &SyncState{Version: 1, Files: make(map[string]*SyncEntry)}
+		loaded = &DriveSyncState{Version: 1, Files: make(map[string]*SyncEntry)}
 	}
 	loaded.FolderID = newFolderID
 
@@ -180,16 +180,16 @@ func TestSyncState_FolderIDChange(t *testing.T) {
 	}
 }
 
-func TestSyncState_NilFilesMap(t *testing.T) {
+func TestDriveSyncState_NilFilesMap(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "sync.json")
 
 	// Write state with null files map.
 	writeFile(statePath, []byte(`{"version":1,"folder_id":"f1","files":null}`))
 
-	state, err := loadSyncState(statePath)
+	state, err := loadDriveSyncState(statePath)
 	if err != nil {
-		t.Fatalf("loadSyncState: %v", err)
+		t.Fatalf("loadDriveSyncState: %v", err)
 	}
 	if state.Files == nil {
 		t.Error("Files should be initialized, not nil")
@@ -204,7 +204,7 @@ func TestShouldUpload_NewFile(t *testing.T) {
 	os.WriteFile(p, []byte("new content"), 0o600)
 
 	d := &DriveUploader{
-		state:    &SyncState{Version: 1, Files: make(map[string]*SyncEntry)},
+		state:    &DriveSyncState{Version: 1, Files: make(map[string]*SyncEntry)},
 		conflict: "local-wins",
 	}
 
@@ -225,7 +225,7 @@ func TestShouldUpload_Unchanged(t *testing.T) {
 	checksum, _ := md5File(p)
 
 	d := &DriveUploader{
-		state: &SyncState{Version: 1, Files: map[string]*SyncEntry{
+		state: &DriveSyncState{Version: 1, Files: map[string]*SyncEntry{
 			"same.txt": {DriveFileID: "id-1", MD5Checksum: checksum},
 		}},
 		conflict: "local-wins",
@@ -246,7 +246,7 @@ func TestShouldUpload_Modified_LocalWins(t *testing.T) {
 	os.WriteFile(p, []byte("new version"), 0o600)
 
 	d := &DriveUploader{
-		state: &SyncState{Version: 1, Files: map[string]*SyncEntry{
+		state: &DriveSyncState{Version: 1, Files: map[string]*SyncEntry{
 			"changed.txt": {DriveFileID: "id-2", MD5Checksum: "old-checksum"},
 		}},
 		conflict: "local-wins",
@@ -267,7 +267,7 @@ func TestShouldUpload_Modified_Skip(t *testing.T) {
 	os.WriteFile(p, []byte("new version"), 0o600)
 
 	d := &DriveUploader{
-		state: &SyncState{Version: 1, Files: map[string]*SyncEntry{
+		state: &DriveSyncState{Version: 1, Files: map[string]*SyncEntry{
 			"changed.txt": {DriveFileID: "id-3", MD5Checksum: "old-checksum"},
 		}},
 		conflict: "skip",
@@ -288,7 +288,7 @@ func TestShouldUpload_Modified_NewerWins_LocalNewer(t *testing.T) {
 	os.Chtimes(p, now, now)
 
 	d := &DriveUploader{
-		state: &SyncState{Version: 1, Files: map[string]*SyncEntry{
+		state: &DriveSyncState{Version: 1, Files: map[string]*SyncEntry{
 			"newer.txt": {
 				DriveFileID: "id-4",
 				MD5Checksum: "old-checksum",
@@ -313,7 +313,7 @@ func TestShouldUpload_Modified_NewerWins_LocalOlder(t *testing.T) {
 	os.Chtimes(p, past, past)
 
 	d := &DriveUploader{
-		state: &SyncState{Version: 1, Files: map[string]*SyncEntry{
+		state: &DriveSyncState{Version: 1, Files: map[string]*SyncEntry{
 			"older.txt": {
 				DriveFileID: "id-5",
 				MD5Checksum: "old-checksum",
@@ -382,7 +382,7 @@ func TestSaveSyncStateAtomic(t *testing.T) {
 	statePath := filepath.Join(dir, "gdrive-sync.json")
 
 	d := &DriveUploader{
-		state: &SyncState{
+		state: &DriveSyncState{
 			Version:  1,
 			FolderID: "test-folder",
 			Files: map[string]*SyncEntry{
@@ -402,7 +402,7 @@ func TestSaveSyncStateAtomic(t *testing.T) {
 		t.Fatalf("read state file: %v", err)
 	}
 
-	var loaded SyncState
+	var loaded DriveSyncState
 	if err := json.Unmarshal(data, &loaded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

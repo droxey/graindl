@@ -198,7 +198,7 @@ func main() {
 			slog.Error("Invalid iCloud path", "error", err)
 			os.Exit(1)
 		}
-  }
+	}
 	if cfg.GDrive {
 		if cfg.GDriveFolderID == "" {
 			slog.Error("--gdrive requires --gdrive-folder-id")
@@ -242,8 +242,8 @@ func main() {
 		slog.Info(fmt.Sprintf("Format: %s", cfg.OutputFormat))
 	}
 	if cfg.ICloud {
-    slog.Info(fmt.Sprintf("iCloud: %s", cfg.ICloudPath))
-  }
+		slog.Info(fmt.Sprintf("iCloud: %s", cfg.ICloudPath))
+	}
 	if cfg.GDrive {
 		slog.Info(fmt.Sprintf("Google Drive: enabled (folder=%s, conflict=%s)", cfg.GDriveFolderID, cfg.GDriveConflict))
 	}

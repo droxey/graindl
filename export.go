@@ -39,7 +39,7 @@ func NewExporter(cfg *Config) (*Exporter, error) {
 	} else {
 		storage = NewLocalStorage(cfg.OutputDir)
 	}
-  
+
 	exp := &Exporter{
 		cfg: cfg,
 		throttle: &Throttle{
@@ -48,7 +48,7 @@ func NewExporter(cfg *Config) (*Exporter, error) {
 		},
 		manifest: &ExportManifest{ExportedAt: time.Now().UTC().Format(time.RFC3339)},
 		storage:  storage,
-	}, nil
+	}
 
 	if cfg.GDrive {
 		d, err := NewDriveUploader(context.Background(), cfg)
@@ -140,12 +140,11 @@ func (e *Exporter) Run(ctx context.Context) error {
 	}
 
 	if err := e.storage.WriteJSON("_export-manifest.json", e.manifest); err != nil {
-	manifestPath := filepath.Join(e.cfg.OutputDir, "_export-manifest.json")
-	if err := writeJSON(manifestPath, e.manifest); err != nil {
 		slog.Error("Manifest write failed", "error", err)
 	}
 
 	if e.drive != nil {
+		manifestPath := filepath.Join(e.cfg.OutputDir, "_export-manifest.json")
 		if err := e.drive.UploadManifest(ctx, e.cfg.OutputDir, manifestPath); err != nil {
 			slog.Warn("Drive manifest upload failed", "error", err)
 		}
@@ -331,12 +330,11 @@ func (e *Exporter) runSingle(ctx context.Context) error {
 	}
 
 	if err := e.storage.WriteJSON("_export-manifest.json", e.manifest); err != nil {
-	manifestPath := filepath.Join(e.cfg.OutputDir, "_export-manifest.json")
-	if err := writeJSON(manifestPath, e.manifest); err != nil {
 		slog.Error("Manifest write failed", "error", err)
 	}
 
 	if e.drive != nil {
+		manifestPath := filepath.Join(e.cfg.OutputDir, "_export-manifest.json")
 		if err := e.drive.UploadManifest(ctx, e.cfg.OutputDir, manifestPath); err != nil {
 			slog.Warn("Drive manifest upload failed", "error", err)
 		}
@@ -682,6 +680,9 @@ func (e *Exporter) copyToICloudIfEnabled(relPath string) {
 		if err := ic.CopyFileToICloud(relPath); err != nil {
 			slog.Warn("iCloud copy failed", "path", relPath, "error", err)
 		}
+	}
+}
+
 // cleanLocalFiles removes local files after successful Drive upload.
 func (e *Exporter) cleanLocalFiles(r *ExportResult) {
 	paths := collectResultPaths(r)
