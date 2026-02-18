@@ -23,11 +23,23 @@ type Exporter struct {
 	cfg          *Config
 	throttle     *Throttle
 	manifest     *ExportManifest
+	storage      Storage
 	searchFilter map[string]bool // nil = export all, non-nil = only matched IDs
 	drive        *DriveUploader  // nil when --gdrive is not set
 }
 
 func NewExporter(cfg *Config) (*Exporter, error) {
+	var storage Storage
+	if cfg.ICloud && cfg.ICloudPath != "" {
+		s, err := NewICloudStorage(cfg.OutputDir, cfg.ICloudPath)
+		if err != nil {
+			return nil, fmt.Errorf("icloud storage: %w", err)
+		}
+		storage = s
+	} else {
+		storage = NewLocalStorage(cfg.OutputDir)
+	}
+  
 	exp := &Exporter{
 		cfg: cfg,
 		throttle: &Throttle{
@@ -35,7 +47,8 @@ func NewExporter(cfg *Config) (*Exporter, error) {
 			Max: time.Duration(cfg.MaxDelaySec * float64(time.Second)),
 		},
 		manifest: &ExportManifest{ExportedAt: time.Now().UTC().Format(time.RFC3339)},
-	}
+		storage:  storage,
+	}, nil
 
 	if cfg.GDrive {
 		d, err := NewDriveUploader(context.Background(), cfg)
@@ -49,7 +62,7 @@ func NewExporter(cfg *Config) (*Exporter, error) {
 }
 
 func (e *Exporter) Run(ctx context.Context) error {
-	if err := ensureDir(e.cfg.OutputDir); err != nil {
+	if err := e.storage.EnsureDir(""); err != nil {
 		return fmt.Errorf("output dir: %w", err)
 	}
 
@@ -126,6 +139,7 @@ func (e *Exporter) Run(ctx context.Context) error {
 		e.exportSequential(ctx, meetings)
 	}
 
+	if err := e.storage.WriteJSON("_export-manifest.json", e.manifest); err != nil {
 	manifestPath := filepath.Join(e.cfg.OutputDir, "_export-manifest.json")
 	if err := writeJSON(manifestPath, e.manifest); err != nil {
 		slog.Error("Manifest write failed", "error", err)
@@ -272,6 +286,11 @@ func (e *Exporter) Close() {
 	if e.browser != nil {
 		e.browser.Close()
 	}
+	if e.storage != nil {
+		if err := e.storage.Close(); err != nil {
+			slog.Error("Storage close failed", "error", err)
+		}
+	}
 }
 
 // runSingle exports a single meeting by ID, skipping discovery.
@@ -311,6 +330,7 @@ func (e *Exporter) runSingle(ctx context.Context) error {
 		e.manifest.Errors++
 	}
 
+	if err := e.storage.WriteJSON("_export-manifest.json", e.manifest); err != nil {
 	manifestPath := filepath.Join(e.cfg.OutputDir, "_export-manifest.json")
 	if err := writeJSON(manifestPath, e.manifest); err != nil {
 		slog.Error("Manifest write failed", "error", err)
@@ -388,17 +408,18 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 	r := &ExportResult{ID: ref.ID, Title: ref.Title, TranscriptPaths: make(map[string]string)}
 	dateStr := dateFromISO(coalesce(ref.Date, time.Now().Format("2006-01-02")))
 	r.DateDir = dateStr
-	dir := filepath.Join(e.cfg.OutputDir, dateStr)
-	if err := ensureDir(dir); err != nil {
+
+	if err := e.storage.EnsureDir(dateStr); err != nil {
 		r.Status = "error"
 		r.ErrorMsg = err.Error()
 		slog.Error("Dir creation failed", "error", err)
 		return r
 	}
-	base := filepath.Join(dir, sanitize(ref.ID))
-	metaPath, videoPath := base+".json", base+".mp4"
 
-	if !e.cfg.Overwrite && fileExists(metaPath) {
+	relBase := filepath.Join(dateStr, sanitize(ref.ID))
+	metaRelPath := relBase + ".json"
+
+	if !e.cfg.Overwrite && e.storage.FileExists(metaRelPath) {
 		slog.Debug("Already exported, skipping", "id", ref.ID)
 		r.Status = "skipped"
 		return r
@@ -421,23 +442,22 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 
 	meta := e.buildScrapedMetadata(ref, pageURL, scraped)
 
-	e.writeMetadata(meta, metaPath, r)
-	e.writeTranscript(scraped, ref.ID, base, r)
-	e.writeHighlights(scraped, ref.ID, base, r)
+	e.writeMetadata(meta, metaRelPath, r)
+	e.writeTranscript(scraped, ref.ID, relBase, r)
+	e.writeHighlights(scraped, ref.ID, relBase, r)
 
 	transcriptText := ""
 	if scraped != nil {
 		transcriptText = scraped.Transcript
 	}
 	if e.cfg.OutputFormat != "" {
-		e.writeFormattedMarkdown(meta, transcriptText, base, r)
+		e.writeFormattedMarkdown(meta, transcriptText, relBase, r)
 	}
 	if !e.cfg.SkipVideo {
 		if e.cfg.AudioOnly {
-			audioPath := base + ".m4a"
-			e.writeAudio(ctx, ref, audioPath, r)
+			e.writeAudio(ctx, ref, relBase+".m4a", r)
 		} else {
-			e.writeVideo(ctx, ref, videoPath, r)
+			e.writeVideo(ctx, ref, relBase+".mp4", r)
 		}
 	}
 	if r.Status == "" {
@@ -465,12 +485,12 @@ func (e *Exporter) exportOne(ctx context.Context, ref MeetingRef) *ExportResult 
 	return r
 }
 
-func (e *Exporter) writeMetadata(meta *Metadata, path string, r *ExportResult) {
-	if err := writeJSON(path, meta); err != nil {
+func (e *Exporter) writeMetadata(meta *Metadata, relPath string, r *ExportResult) {
+	if err := e.storage.WriteJSON(relPath, meta); err != nil {
 		slog.Error("Metadata write failed", "error", err)
 		return
 	}
-	r.MetadataPath = e.relPath(path)
+	r.MetadataPath = relPath
 	slog.Debug("Metadata written", "id", meta.ID)
 }
 
@@ -510,21 +530,21 @@ func (e *Exporter) buildScrapedMetadata(ref MeetingRef, pageURL string, scraped 
 	return meta
 }
 
-func (e *Exporter) writeTranscript(scraped *MeetingPageData, id, base string, r *ExportResult) {
+func (e *Exporter) writeTranscript(scraped *MeetingPageData, id, relBase string, r *ExportResult) {
 	if scraped == nil || scraped.Transcript == "" {
 		return
 	}
 
-	p := base + ".transcript.txt"
-	if err := writeFile(p, []byte(scraped.Transcript)); err != nil {
+	relPath := relBase + ".transcript.txt"
+	if err := e.storage.WriteFile(relPath, []byte(scraped.Transcript)); err != nil {
 		slog.Error("Transcript write failed", "error", err, "id", id)
 		return
 	}
-	r.TranscriptPaths["text"] = e.relPath(p)
+	r.TranscriptPaths["text"] = relPath
 	slog.Info("Transcript exported", "id", id)
 }
 
-func (e *Exporter) writeHighlights(scraped *MeetingPageData, id, base string, r *ExportResult) {
+func (e *Exporter) writeHighlights(scraped *MeetingPageData, id, relBase string, r *ExportResult) {
 	if scraped == nil || len(scraped.Highlights) == 0 {
 		return
 	}
@@ -534,46 +554,51 @@ func (e *Exporter) writeHighlights(scraped *MeetingPageData, id, base string, r 
 		clips[i] = normalizeHighlight(h, i)
 	}
 
-	p := base + ".highlights.json"
-	if err := writeJSON(p, clips); err != nil {
+	relPath := relBase + ".highlights.json"
+	if err := e.storage.WriteJSON(relPath, clips); err != nil {
 		slog.Error("Highlights write failed", "error", err, "id", id)
 		return
 	}
-	r.HighlightsPath = e.relPath(p)
+	r.HighlightsPath = relPath
 	slog.Info("Highlights exported", "id", id, "count", len(clips))
 }
 
-func (e *Exporter) writeFormattedMarkdown(meta *Metadata, transcriptText, base string, r *ExportResult) {
+func (e *Exporter) writeFormattedMarkdown(meta *Metadata, transcriptText, relBase string, r *ExportResult) {
 	md := renderFormattedMarkdown(e.cfg.OutputFormat, meta, transcriptText)
 	if md == "" {
 		return
 	}
 
-	p := base + ".md"
-	if err := writeFile(p, []byte(md)); err != nil {
+	relPath := relBase + ".md"
+	if err := e.storage.WriteFile(relPath, []byte(md)); err != nil {
 		slog.Error("Markdown write failed", "error", err, "id", meta.ID)
 		return
 	}
-	r.MarkdownPath = e.relPath(p)
+	r.MarkdownPath = relPath
 	slog.Debug("Formatted markdown written", "format", e.cfg.OutputFormat, "id", meta.ID)
 }
 
-func (e *Exporter) writeVideo(ctx context.Context, ref MeetingRef, videoPath string, r *ExportResult) {
+func (e *Exporter) writeVideo(ctx context.Context, ref MeetingRef, relPath string, r *ExportResult) {
+	absVideoPath := e.storage.AbsPath(relPath)
 	slog.Debug("Downloading video", "id", ref.ID)
 	_ = e.withBrowser(func(b *Browser) error {
-		method, path := b.DownloadVideo(ctx, coalesce(ref.URL, meetingURL(ref.ID)), videoPath)
+		method, path := b.DownloadVideo(ctx, coalesce(ref.URL, meetingURL(ref.ID)), absVideoPath)
 		r.VideoMethod = method
+		resultRelPath := e.relPath(path)
 		switch method {
 		case "button", "direct":
-			r.VideoPath = e.relPath(path)
+			r.VideoPath = resultRelPath
 			slog.Info("Video downloaded", "method", method, "id", ref.ID)
+			e.copyToICloudIfEnabled(resultRelPath)
 		case "hls":
-			r.VideoPath = e.relPath(path)
+			r.VideoPath = resultRelPath
 			r.Status = "hls_pending"
 			slog.Warn("HLS stream — run convert_hls.sh", "id", ref.ID)
+			e.copyToICloudIfEnabled(resultRelPath)
 		case "url-saved":
-			r.VideoPath = e.relPath(path)
+			r.VideoPath = resultRelPath
 			slog.Warn("URL saved (manual download needed)", "id", ref.ID)
+			e.copyToICloudIfEnabled(resultRelPath)
 		default:
 			slog.Warn("Video download failed", "id", ref.ID)
 		}
@@ -581,7 +606,8 @@ func (e *Exporter) writeVideo(ctx context.Context, ref MeetingRef, videoPath str
 	})
 }
 
-func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, audioPath string, r *ExportResult) {
+func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, relPath string, r *ExportResult) {
+	absAudioPath := e.storage.AbsPath(relPath)
 	pageURL := coalesce(ref.URL, meetingURL(ref.ID))
 	slog.Debug("Finding video source for audio extraction", "id", ref.ID)
 
@@ -596,46 +622,49 @@ func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, audioPath str
 	if videoURL != "" {
 		if strings.Contains(videoURL, ".m3u8") {
 			// HLS: ffmpeg can extract audio directly from the manifest.
-			if err := extractAudio(ctx, videoURL, audioPath, verbose); err == nil {
-				r.AudioPath = e.relPath(audioPath)
+			if err := extractAudio(ctx, videoURL, absAudioPath, verbose); err == nil {
+				r.AudioPath = relPath
 				r.AudioMethod = "ffmpeg-hls"
 				slog.Info("Audio extracted from HLS stream", "id", ref.ID)
+				e.copyToICloudIfEnabled(relPath)
 				return
 			}
 			slog.Warn("HLS audio extraction failed, saving URL", "id", ref.ID)
-			p := strings.TrimSuffix(audioPath, ".m4a") + ".m3u8.url"
-			if err := writeFile(p, []byte(videoURL)); err != nil {
+			urlRelPath := strings.TrimSuffix(relPath, ".m4a") + ".m3u8.url"
+			if err := e.storage.WriteFile(urlRelPath, []byte(videoURL)); err != nil {
 				slog.Error("Failed to write HLS URL file", "error", err)
 			}
-			r.AudioPath = e.relPath(p)
+			r.AudioPath = urlRelPath
 			r.AudioMethod = "hls"
 			r.Status = "hls_pending"
 			return
 		}
 
 		// Direct URL: ffmpeg extracts audio from the remote file.
-		if err := extractAudio(ctx, videoURL, audioPath, verbose); err == nil {
-			r.AudioPath = e.relPath(audioPath)
+		if err := extractAudio(ctx, videoURL, absAudioPath, verbose); err == nil {
+			r.AudioPath = relPath
 			r.AudioMethod = "ffmpeg-direct"
 			slog.Info("Audio extracted from direct URL", "id", ref.ID)
+			e.copyToICloudIfEnabled(relPath)
 			return
 		}
 		slog.Warn("Direct URL audio extraction failed, trying button download", "id", ref.ID)
 	}
 
 	// Fallback: download the full video via button (under browser lock), extract audio, then delete.
-	tmpVideo := audioPath + ".tmp.mp4"
+	tmpVideo := absAudioPath + ".tmp.mp4"
 	var btnPath string
 	_ = e.withBrowser(func(b *Browser) error {
 		btnPath = b.tryDownloadBtn(ctx, tmpVideo)
 		return nil
 	})
 	if btnPath != "" {
-		if err := extractAudio(ctx, btnPath, audioPath, verbose); err == nil {
+		if err := extractAudio(ctx, btnPath, absAudioPath, verbose); err == nil {
 			_ = os.Remove(tmpVideo)
-			r.AudioPath = e.relPath(audioPath)
+			r.AudioPath = relPath
 			r.AudioMethod = "ffmpeg-local"
 			slog.Info("Audio extracted from downloaded video", "id", ref.ID)
+			e.copyToICloudIfEnabled(relPath)
 			return
 		}
 		_ = os.Remove(tmpVideo)
@@ -644,6 +673,15 @@ func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, audioPath str
 	slog.Warn("Audio extraction failed", "id", ref.ID)
 }
 
+// copyToICloudIfEnabled copies a file from the local output directory to
+// iCloud Drive when the storage backend supports it. This is used for files
+// written externally (e.g., browser video downloads, ffmpeg audio extraction)
+// that bypass the storage interface. Non-fatal on failure.
+func (e *Exporter) copyToICloudIfEnabled(relPath string) {
+	if ic, ok := e.storage.(*ICloudStorage); ok {
+		if err := ic.CopyFileToICloud(relPath); err != nil {
+			slog.Warn("iCloud copy failed", "path", relPath, "error", err)
+		}
 // cleanLocalFiles removes local files after successful Drive upload.
 func (e *Exporter) cleanLocalFiles(r *ExportResult) {
 	paths := collectResultPaths(r)

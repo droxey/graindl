@@ -111,6 +111,8 @@ func main() {
 	flag.StringVar(&cfg.OutputFormat, "output-format", envGet(dotenv, "GRAIN_OUTPUT_FORMAT"), "Export format: obsidian, notion (adds frontmatter markdown)")
 	flag.StringVar(&cfg.HealthcheckFile, "healthcheck-file", envGet(dotenv, "GRAIN_HEALTHCHECK_FILE"), "File to touch after each watch cycle (for monitoring)")
 	flag.StringVar(&cfg.LogFormat, "log-format", envGet(dotenv, "GRAIN_LOG_FORMAT"), "Log format: color (default), json")
+	flag.BoolVar(&cfg.ICloud, "icloud", envBool(dotenv, "GRAIN_ICLOUD"), "Copy exports to iCloud Drive")
+	flag.StringVar(&cfg.ICloudPath, "icloud-path", envGet(dotenv, "GRAIN_ICLOUD_PATH"), "Custom iCloud Drive path (auto-detected on macOS)")
 	flag.BoolVar(&cfg.GDrive, "gdrive", envBool(dotenv, "GRAIN_GDRIVE"), "Enable Google Drive upload after export")
 	flag.StringVar(&cfg.GDriveFolderID, "gdrive-folder-id", envGet(dotenv, "GRAIN_GDRIVE_FOLDER_ID"), "Target Google Drive folder ID")
 	flag.StringVar(&cfg.GDriveCredentials, "gdrive-credentials", envGet(dotenv, "GRAIN_GDRIVE_CREDENTIALS"), "Path to Google OAuth2/service-account credentials JSON")
@@ -182,6 +184,21 @@ func main() {
 		}
 	}
 
+	// iCloud: resolve and validate path.
+	if cfg.ICloud {
+		if cfg.ICloudPath == "" {
+			resolved, err := detectICloudPath()
+			if err != nil {
+				slog.Error("iCloud path detection failed", "error", err)
+				os.Exit(1)
+			}
+			cfg.ICloudPath = resolved
+		}
+		if err := validateICloudPath(cfg.ICloudPath); err != nil {
+			slog.Error("Invalid iCloud path", "error", err)
+			os.Exit(1)
+		}
+  }
 	if cfg.GDrive {
 		if cfg.GDriveFolderID == "" {
 			slog.Error("--gdrive requires --gdrive-folder-id")
@@ -224,6 +241,9 @@ func main() {
 	if cfg.OutputFormat != "" {
 		slog.Info(fmt.Sprintf("Format: %s", cfg.OutputFormat))
 	}
+	if cfg.ICloud {
+    slog.Info(fmt.Sprintf("iCloud: %s", cfg.ICloudPath))
+  }
 	if cfg.GDrive {
 		slog.Info(fmt.Sprintf("Google Drive: enabled (folder=%s, conflict=%s)", cfg.GDriveFolderID, cfg.GDriveConflict))
 	}

@@ -526,9 +526,9 @@ func TestRunSingleMeetingWithFormat(t *testing.T) {
 
 func TestWriteFormattedMarkdownWithTranscript(t *testing.T) {
 	dir := t.TempDir()
-	e := &Exporter{cfg: &Config{OutputDir: dir, OutputFormat: "obsidian"}}
+	e := &Exporter{cfg: &Config{OutputDir: dir, OutputFormat: "obsidian"}, storage: NewLocalStorage(dir)}
 	r := &ExportResult{TranscriptPaths: make(map[string]string)}
-	base := filepath.Join(dir, "tx-test")
+	relBase := "tx-test"
 
 	meta := &Metadata{
 		ID:    "tx-test",
@@ -537,7 +537,7 @@ func TestWriteFormattedMarkdownWithTranscript(t *testing.T) {
 		Links: Links{Grain: "https://grain.com/app/meetings/tx-test"},
 	}
 
-	e.writeFormattedMarkdown(meta, "Hello world transcript text", base, r)
+	e.writeFormattedMarkdown(meta, "Hello world transcript text", relBase, r)
 
 	if r.MarkdownPath == "" {
 		t.Fatal("MarkdownPath should be set")
@@ -560,9 +560,9 @@ func TestWriteFormattedMarkdownWithTranscript(t *testing.T) {
 
 func TestWriteFormattedMarkdownEmptyTranscript(t *testing.T) {
 	dir := t.TempDir()
-	e := &Exporter{cfg: &Config{OutputDir: dir, OutputFormat: "notion"}}
+	e := &Exporter{cfg: &Config{OutputDir: dir, OutputFormat: "notion"}, storage: NewLocalStorage(dir)}
 	r := &ExportResult{TranscriptPaths: make(map[string]string)}
-	base := filepath.Join(dir, "no-tx")
+	relBase := "no-tx"
 
 	meta := &Metadata{
 		ID:    "no-tx",
@@ -570,7 +570,7 @@ func TestWriteFormattedMarkdownEmptyTranscript(t *testing.T) {
 		Links: Links{Grain: "https://grain.com/app/meetings/no-tx"},
 	}
 
-	e.writeFormattedMarkdown(meta, "", base, r)
+	e.writeFormattedMarkdown(meta, "", relBase, r)
 
 	if r.MarkdownPath == "" {
 		t.Fatal("MarkdownPath should be set")

@@ -34,6 +34,8 @@ type Config struct {
 	WatchInterval   time.Duration
 	HealthcheckFile string
 	LogFormat       string // "", "json"
+	ICloud          bool   // --icloud: copy exports to iCloud Drive
+	ICloudPath      string // --icloud-path: custom iCloud Drive directory (auto-detected on macOS)
 
 	// Google Drive upload
 	GDrive            bool
