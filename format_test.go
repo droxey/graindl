@@ -352,7 +352,7 @@ func TestExportOneObsidianFormat(t *testing.T) {
 		MinDelaySec:  0,
 		MaxDelaySec:  0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestExportOneNotionFormat(t *testing.T) {
 		MinDelaySec:  0,
 		MaxDelaySec:  0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -456,7 +456,7 @@ func TestExportOneNoFormatNoMarkdown(t *testing.T) {
 		MinDelaySec:  0,
 		MaxDelaySec:  0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestRunSingleMeetingWithFormat(t *testing.T) {
 		MinDelaySec:  0,
 		MaxDelaySec:  0.01,
 	}
-	e, err := NewExporter(cfg)
+	e, err := NewExporter(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewExporter: %v", err)
 	}

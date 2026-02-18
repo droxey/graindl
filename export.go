@@ -28,7 +28,7 @@ type Exporter struct {
 	drive        *DriveUploader  // nil when --gdrive is not set
 }
 
-func NewExporter(cfg *Config) (*Exporter, error) {
+func NewExporter(ctx context.Context, cfg *Config) (*Exporter, error) {
 	var storage Storage
 	if cfg.ICloud && cfg.ICloudPath != "" {
 		s, err := NewICloudStorage(cfg.OutputDir, cfg.ICloudPath)
@@ -39,7 +39,7 @@ func NewExporter(cfg *Config) (*Exporter, error) {
 	} else {
 		storage = NewLocalStorage(cfg.OutputDir)
 	}
-  
+
 	exp := &Exporter{
 		cfg: cfg,
 		throttle: &Throttle{
@@ -48,10 +48,10 @@ func NewExporter(cfg *Config) (*Exporter, error) {
 		},
 		manifest: &ExportManifest{ExportedAt: time.Now().UTC().Format(time.RFC3339)},
 		storage:  storage,
-	}, nil
+	}
 
 	if cfg.GDrive {
-		d, err := NewDriveUploader(context.Background(), cfg)
+		d, err := NewDriveUploader(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("google drive init: %w", err)
 		}
@@ -139,13 +139,22 @@ func (e *Exporter) Run(ctx context.Context) error {
 		e.exportSequential(ctx, meetings)
 	}
 
+	e.finalizeManifest(ctx)
+	if e.manifest.HLSPending > 0 {
+		fmt.Println("  Run ./convert_hls.sh to convert HLS streams to MP4")
+	}
+	return nil
+}
+
+// finalizeManifest writes the export manifest, uploads to Drive if enabled,
+// and logs the summary. Shared by Run and runSingle.
+func (e *Exporter) finalizeManifest(ctx context.Context) {
 	if err := e.storage.WriteJSON("_export-manifest.json", e.manifest); err != nil {
-	manifestPath := filepath.Join(e.cfg.OutputDir, "_export-manifest.json")
-	if err := writeJSON(manifestPath, e.manifest); err != nil {
 		slog.Error("Manifest write failed", "error", err)
 	}
 
 	if e.drive != nil {
+		manifestPath := filepath.Join(e.cfg.OutputDir, "_export-manifest.json")
 		if err := e.drive.UploadManifest(ctx, e.cfg.OutputDir, manifestPath); err != nil {
 			slog.Warn("Drive manifest upload failed", "error", err)
 		}
@@ -160,10 +169,6 @@ func (e *Exporter) Run(ctx context.Context) error {
 		"errors", e.manifest.Errors,
 		"hls_pending", e.manifest.HLSPending,
 	)
-	if e.manifest.HLSPending > 0 {
-		fmt.Println("  Run ./convert_hls.sh to convert HLS streams to MP4")
-	}
-	return nil
 }
 
 // exportSequential exports meetings one at a time (the default).
@@ -330,26 +335,7 @@ func (e *Exporter) runSingle(ctx context.Context) error {
 		e.manifest.Errors++
 	}
 
-	if err := e.storage.WriteJSON("_export-manifest.json", e.manifest); err != nil {
-	manifestPath := filepath.Join(e.cfg.OutputDir, "_export-manifest.json")
-	if err := writeJSON(manifestPath, e.manifest); err != nil {
-		slog.Error("Manifest write failed", "error", err)
-	}
-
-	if e.drive != nil {
-		if err := e.drive.UploadManifest(ctx, e.cfg.OutputDir, manifestPath); err != nil {
-			slog.Warn("Drive manifest upload failed", "error", err)
-		}
-		if err := e.drive.saveSyncState(); err != nil {
-			slog.Warn("Failed to save Drive sync state", "error", err)
-		}
-	}
-
-	slog.Info("Done",
-		"ok", e.manifest.OK,
-		"skipped", e.manifest.Skipped,
-		"errors", e.manifest.Errors,
-	)
+	e.finalizeManifest(ctx)
 	return nil
 }
 
@@ -589,16 +575,16 @@ func (e *Exporter) writeVideo(ctx context.Context, ref MeetingRef, relPath strin
 		case "button", "direct":
 			r.VideoPath = resultRelPath
 			slog.Info("Video downloaded", "method", method, "id", ref.ID)
-			e.copyToICloudIfEnabled(resultRelPath)
+			e.storage.SyncExternalFile(resultRelPath)
 		case "hls":
 			r.VideoPath = resultRelPath
 			r.Status = "hls_pending"
 			slog.Warn("HLS stream — run convert_hls.sh", "id", ref.ID)
-			e.copyToICloudIfEnabled(resultRelPath)
+			e.storage.SyncExternalFile(resultRelPath)
 		case "url-saved":
 			r.VideoPath = resultRelPath
 			slog.Warn("URL saved (manual download needed)", "id", ref.ID)
-			e.copyToICloudIfEnabled(resultRelPath)
+			e.storage.SyncExternalFile(resultRelPath)
 		default:
 			slog.Warn("Video download failed", "id", ref.ID)
 		}
@@ -626,7 +612,7 @@ func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, relPath strin
 				r.AudioPath = relPath
 				r.AudioMethod = "ffmpeg-hls"
 				slog.Info("Audio extracted from HLS stream", "id", ref.ID)
-				e.copyToICloudIfEnabled(relPath)
+				e.storage.SyncExternalFile(relPath)
 				return
 			}
 			slog.Warn("HLS audio extraction failed, saving URL", "id", ref.ID)
@@ -645,7 +631,7 @@ func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, relPath strin
 			r.AudioPath = relPath
 			r.AudioMethod = "ffmpeg-direct"
 			slog.Info("Audio extracted from direct URL", "id", ref.ID)
-			e.copyToICloudIfEnabled(relPath)
+			e.storage.SyncExternalFile(relPath)
 			return
 		}
 		slog.Warn("Direct URL audio extraction failed, trying button download", "id", ref.ID)
@@ -664,7 +650,7 @@ func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, relPath strin
 			r.AudioPath = relPath
 			r.AudioMethod = "ffmpeg-local"
 			slog.Info("Audio extracted from downloaded video", "id", ref.ID)
-			e.copyToICloudIfEnabled(relPath)
+			e.storage.SyncExternalFile(relPath)
 			return
 		}
 		_ = os.Remove(tmpVideo)
@@ -673,15 +659,6 @@ func (e *Exporter) writeAudio(ctx context.Context, ref MeetingRef, relPath strin
 	slog.Warn("Audio extraction failed", "id", ref.ID)
 }
 
-// copyToICloudIfEnabled copies a file from the local output directory to
-// iCloud Drive when the storage backend supports it. This is used for files
-// written externally (e.g., browser video downloads, ffmpeg audio extraction)
-// that bypass the storage interface. Non-fatal on failure.
-func (e *Exporter) copyToICloudIfEnabled(relPath string) {
-	if ic, ok := e.storage.(*ICloudStorage); ok {
-		if err := ic.CopyFileToICloud(relPath); err != nil {
-			slog.Warn("iCloud copy failed", "path", relPath, "error", err)
-		}
 // cleanLocalFiles removes local files after successful Drive upload.
 func (e *Exporter) cleanLocalFiles(r *ExportResult) {
 	paths := collectResultPaths(r)
