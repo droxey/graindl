@@ -182,29 +182,39 @@ graindl [flags]
 
 ### Flags & Environment Variables
 
-|Flag                |Env Var                 |Default           |Description                                                           |
-|--------------------|------------------------|------------------|----------------------------------------------------------------------|
-|`--output`          |`GRAIN_OUTPUT_DIR`      |`./recordings`    |Output directory for exported meetings                                |
-|`--session-dir`     |`GRAIN_SESSION_DIR`     |`./.grain-session`|Browser profile directory (session persistence)                       |
-|`--max`             |`GRAIN_MAX_MEETINGS`    |`0` (all)         |Max number of meetings to export                                      |
-|`--id`              |`GRAIN_MEETING_ID`      |                  |Export a single meeting by its Grain ID                               |
-|`--search`          |`GRAIN_SEARCH`          |                  |Search query to filter meetings                                       |
-|`--skip-video`      |`GRAIN_SKIP_VIDEO`      |`false`           |Skip video downloads (metadata + transcript only)                     |
-|`--audio-only`      |`GRAIN_AUDIO_ONLY`      |`false`           |Extract audio track only (requires ffmpeg)                            |
-|`--overwrite`       |`GRAIN_OVERWRITE`       |`false`           |Re-export meetings that already exist locally                         |
-|`--headless`        |`GRAIN_HEADLESS`        |`false`           |Run Chromium in headless mode                                         |
-|`--clean-session`   |                        |`false`           |Wipe browser session before run                                       |
-|`--parallel`        |`GRAIN_PARALLEL`        |`1`               |Concurrent meeting exports (file I/O only; browser ops are serialized)|
-|`--output-format`   |`GRAIN_OUTPUT_FORMAT`   |                  |Export format: `obsidian` or `notion`                                 |
-|`--watch`           |`GRAIN_WATCH`           |`false`           |Continuous polling mode                                               |
-|`--interval`        |`GRAIN_WATCH_INTERVAL`  |`30m`             |Polling interval for watch mode (e.g., `5m`, `1h`)                    |
-|`--healthcheck-file`|`GRAIN_HEALTHCHECK_FILE`|                  |File to touch after each watch cycle (monitoring)                     |
-|`--min-delay`       |`GRAIN_MIN_DELAY`       |`2.0`             |Min throttle delay in seconds                                         |
-|`--max-delay`       |`GRAIN_MAX_DELAY`       |`6.0`             |Max throttle delay in seconds                                         |
-|`--dry-run`         |`GRAIN_DRY_RUN`         |`false`           |List meetings without exporting                                       |
-|`--log-format`      |`GRAIN_LOG_FORMAT`      |`color`           |Log format: `color` (default) or `json`                               |
-|`--verbose`         |`GRAIN_VERBOSE`         |`false`           |Debug-level logging                                                   |
-|`--version`         |                        |                  |Print version and exit                                                |
+|Flag                      |Env Var                    |Default           |Description                                                           |
+|--------------------------|---------------------------|------------------|----------------------------------------------------------------------|
+|`--output`                |`GRAIN_OUTPUT_DIR`         |`./recordings`    |Output directory for exported meetings                                |
+|`--session-dir`           |`GRAIN_SESSION_DIR`        |`./.grain-session`|Browser profile directory (session persistence)                       |
+|`--max`                   |`GRAIN_MAX_MEETINGS`       |`0` (all)         |Max number of meetings to export                                      |
+|`--id`                    |`GRAIN_MEETING_ID`         |                  |Export a single meeting by its Grain ID                               |
+|`--search`                |`GRAIN_SEARCH`             |                  |Search query to filter meetings                                       |
+|`--skip-video`            |`GRAIN_SKIP_VIDEO`         |`false`           |Skip video downloads (metadata + transcript only)                     |
+|`--audio-only`            |`GRAIN_AUDIO_ONLY`         |`false`           |Extract audio track only (requires ffmpeg)                            |
+|`--overwrite`             |`GRAIN_OVERWRITE`          |`false`           |Re-export meetings that already exist locally                         |
+|`--headless`              |`GRAIN_HEADLESS`           |`false`           |Run Chromium in headless mode                                         |
+|`--clean-session`         |                           |`false`           |Wipe browser session before run                                       |
+|`--parallel`              |`GRAIN_PARALLEL`           |`1`               |Concurrent meeting exports (file I/O only; browser ops are serialized)|
+|`--output-format`         |`GRAIN_OUTPUT_FORMAT`      |                  |Export format: `obsidian` or `notion`                                 |
+|`--watch`                 |`GRAIN_WATCH`              |`false`           |Continuous polling mode                                               |
+|`--interval`              |`GRAIN_WATCH_INTERVAL`     |`30m`             |Polling interval for watch mode (e.g., `5m`, `1h`)                    |
+|`--healthcheck-file`      |`GRAIN_HEALTHCHECK_FILE`   |                  |File to touch after each watch cycle (monitoring)                     |
+|`--min-delay`             |`GRAIN_MIN_DELAY`          |`2.0`             |Min throttle delay in seconds                                         |
+|`--max-delay`             |`GRAIN_MAX_DELAY`          |`6.0`             |Max throttle delay in seconds                                         |
+|`--dry-run`               |`GRAIN_DRY_RUN`            |`false`           |List meetings without exporting                                       |
+|`--log-format`            |`GRAIN_LOG_FORMAT`         |`color`           |Log format: `color` (default) or `json`                               |
+|`--verbose`               |`GRAIN_VERBOSE`            |`false`           |Debug-level logging                                                   |
+|`--version`               |                           |                  |Print version and exit                                                |
+|`--icloud`                |`GRAIN_ICLOUD`             |`false`           |Copy exports to iCloud Drive (macOS only)                             |
+|`--icloud-path`           |`GRAIN_ICLOUD_PATH`        |auto-detected     |Custom iCloud Drive path (auto-detected on macOS if not set)          |
+|`--gdrive`                |`GRAIN_GDRIVE`             |`false`           |Upload exports to Google Drive after local export                     |
+|`--gdrive-folder-id`      |`GRAIN_GDRIVE_FOLDER_ID`   |                  |Target Google Drive folder ID (required with `--gdrive`)              |
+|`--gdrive-credentials`    |`GRAIN_GDRIVE_CREDENTIALS` |                  |Path to OAuth2/service-account credentials JSON (required with `--gdrive`)|
+|`--gdrive-token`          |`GRAIN_GDRIVE_TOKEN`       |auto in session   |Path to cached OAuth2 token file                                      |
+|`--gdrive-service-account`|`GRAIN_GDRIVE_SERVICE_ACCT`|`false`           |Use service account auth instead of OAuth2 user flow                  |
+|`--gdrive-conflict`       |`GRAIN_GDRIVE_CONFLICT`    |`local-wins`      |Conflict resolution: `local-wins`, `skip`, or `newer-wins`            |
+|`--gdrive-verify`         |`GRAIN_GDRIVE_VERIFY`      |`false`           |Query Drive API to verify state before uploading                      |
+|`--gdrive-clean-local`    |`GRAIN_GDRIVE_CLEAN_LOCAL` |`false`           |Remove local files after successful Drive upload                      |
 
 **Config priority:** CLI flags > environment variables > `.env` file > defaults.
 
@@ -275,6 +285,46 @@ Generate markdown files with YAML frontmatter tailored for your PKM tool of choi
 ```
 
 Each exported meeting gets a `.md` file alongside the standard JSON/text output. The markdown includes AI notes, highlights, and the full transcript — ready to drop into your vault or workspace.
+
+### Google Drive Upload
+
+Automatically upload exports to a Google Drive folder after local export completes. Requires a Google Cloud project with the Drive API enabled.
+
+```bash
+# Upload using OAuth2 user credentials (interactive — opens a browser for consent on first run)
+./graindl --gdrive \
+  --gdrive-folder-id YOUR_FOLDER_ID \
+  --gdrive-credentials /path/to/oauth2-client-credentials.json
+
+# Upload using a service account (headless / Docker)
+./graindl --gdrive --gdrive-service-account \
+  --gdrive-folder-id YOUR_FOLDER_ID \
+  --gdrive-credentials /path/to/service-account-key.json
+```
+
+Only new or changed files are uploaded. Conflict resolution is controlled by `--gdrive-conflict`:
+
+| Mode | Behavior |
+|------|----------|
+| `local-wins` (default) | Local file always overwrites the Drive copy |
+| `skip` | Skip upload if the file already exists on Drive |
+| `newer-wins` | Upload only if the local file is newer than the last upload |
+
+Use `--gdrive-verify` to reconcile local sync state against the Drive API (useful after external changes or multiple machines). Use `--gdrive-clean-local` to remove local files after a successful upload.
+
+### iCloud Drive Sync
+
+Copy exports to your iCloud Drive folder after local export (macOS only):
+
+```bash
+# Auto-detect the iCloud Drive path
+./graindl --icloud
+
+# Specify a custom iCloud path
+./graindl --icloud --icloud-path ~/Library/Mobile\ Documents/com~apple~CloudDocs/graindl
+```
+
+Files are written locally first; iCloud failures are non-fatal — the local copy is always preserved.
 
 ## Output Structure
 
@@ -379,6 +429,9 @@ models.go     Type definitions (Config, MeetingRef, ExportResult, Metadata, High
 export.go     Exporter orchestrator: discovery, per-meeting export, manifest
 browser.go    Rod/Chromium wrapper: login, discovery, scraping, video download
 search.go     Browser-based search: navigates Grain search UI, extracts results
+storage.go    Storage interface + LocalStorage; SyncState for cloud backends
+gdrive.go     Google Drive REST client (stdlib-only); OAuth2 + service account
+icloud.go     iCloud Drive storage backend (macOS only)
 logger.go     Custom slog.Handler with ANSI color output (JSON via --log-format)
 throttle.go   Crypto-random rate limiter for polite request spacing
 audio.go      Audio extraction via ffmpeg (--audio-only mode)
@@ -386,9 +439,9 @@ format.go     Markdown rendering for Obsidian/Notion export
 watch.go      Continuous polling loop with healthcheck support
 ```
 
-### Single Dependency
+### Single External Dependency
 
-graindl has exactly one direct dependency: [`go-rod/rod`](https://github.com/nicedoc/rod) for Chromium DevTools Protocol automation. Everything else is Go’s standard library.
+graindl has exactly one direct external dependency: [`go-rod/rod`](https://github.com/nicedoc/rod) for Chromium DevTools Protocol automation. The Google Drive client (`gdrive.go`) uses only Go’s standard library — no Google SDK pulled in. Everything else is standard library.
 
 ## Security
 
@@ -396,15 +449,15 @@ This tool handles authentication credentials and outputs sensitive meeting data.
 
 |Area                  |Approach                                                                                                                                                 |
 |----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
-|**Credentials**       |`--token-file` reads from disk (keeps secrets out of `ps` output). Docker mounts `.env` read-only.                                                       |
-|**File permissions**  |Session dirs at `0o700`, all output files at `0o600`. Enforced by `writeJSON()`/`writeFile()`.                                                           |
+|**Credentials**       |Secrets supplied via `.env` file or flags — never as command-line arguments (keeps secrets out of `ps` output). Docker mounts `.env` read-only.          |
+|**File permissions**  |Session dirs at `0o700`, all output files at `0o600`. Enforced by the `Storage` interface across all backends.                                           |
 |**Input sanitization**|Meeting IDs validated against strict regex. Titles stripped of path separators, traversal sequences (`..`), and control characters before filesystem use.|
-|**Network safety**    |API responses bounded to 50MB via `io.LimitReader`. 100-page pagination circuit breaker. All HTTP ops use `context.Context` for cancellation.            |
+|**Video fetch limit** |In-browser JS fetch bounded to 50MB to prevent renderer heap exhaustion for large video files.                                                           |
 |**URL encoding**      |`url.QueryEscape()` for all query params. JavaScript strings escaped via `json.Marshal`. No raw interpolation.                                           |
 |**Manifest paths**    |Always relative — no absolute path leaks.                                                                                                                |
 |**Browser stealth**   |`navigator.webdriver` and `AutomationControlled` suppressed. `--clean-session` wipes the profile for a fresh fingerprint.                                |
 
-Full security audit available in <AUDIT.md>.
+Full code review available in [REVIEW.md](REVIEW.md).
 
 ## License
 
