@@ -111,6 +111,7 @@ func main() {
 	flag.StringVar(&cfg.OutputFormat, "output-format", envGet(dotenv, "GRAIN_OUTPUT_FORMAT"), "Export format: obsidian, notion (adds frontmatter markdown)")
 	flag.StringVar(&cfg.HealthcheckFile, "healthcheck-file", envGet(dotenv, "GRAIN_HEALTHCHECK_FILE"), "File to touch after each watch cycle (for monitoring)")
 	flag.StringVar(&cfg.LogFormat, "log-format", envGet(dotenv, "GRAIN_LOG_FORMAT"), "Log format: color (default), json")
+	flag.BoolVar(&cfg.TUI, "tui", envBool(dotenv, "GRAIN_TUI"), "Enable interactive terminal UI")
 	flag.BoolVar(&cfg.ICloud, "icloud", envBool(dotenv, "GRAIN_ICLOUD"), "Copy exports to iCloud Drive")
 	flag.StringVar(&cfg.ICloudPath, "icloud-path", envGet(dotenv, "GRAIN_ICLOUD_PATH"), "Custom iCloud Drive path (auto-detected on macOS)")
 	flag.BoolVar(&cfg.GDrive, "gdrive", envBool(dotenv, "GRAIN_GDRIVE"), "Enable Google Drive upload after export")
@@ -220,36 +221,49 @@ func main() {
 		}
 	}
 
-	slog.Info(fmt.Sprintf("graindl %s", version))
-	slog.Info(fmt.Sprintf("Output: %s", absPath(cfg.OutputDir)))
-	slog.Info(fmt.Sprintf("Throttle: %.1f–%.1fs random delay", cfg.MinDelaySec, cfg.MaxDelaySec))
-	if cfg.Parallel > 1 {
-		slog.Info(fmt.Sprintf("Parallel: %d workers", cfg.Parallel))
+	if !cfg.TUI {
+		slog.Info(fmt.Sprintf("graindl %s", version))
+		slog.Info(fmt.Sprintf("Output: %s", absPath(cfg.OutputDir)))
+		slog.Info(fmt.Sprintf("Throttle: %.1f–%.1fs random delay", cfg.MinDelaySec, cfg.MaxDelaySec))
+		if cfg.Parallel > 1 {
+			slog.Info(fmt.Sprintf("Parallel: %d workers", cfg.Parallel))
+		}
 	}
 	if cfg.AudioOnly {
 		if err := checkFFmpeg(); err != nil {
 			slog.Error("--audio-only requires ffmpeg", "error", err)
 			os.Exit(1)
 		}
-		slog.Info("Audio: extracting audio only (ffmpeg)")
-	} else if cfg.SkipVideo {
+		if !cfg.TUI {
+			slog.Info("Audio: extracting audio only (ffmpeg)")
+		}
+	} else if cfg.SkipVideo && !cfg.TUI {
 		slog.Info("Video: skipped")
 	}
-	if cfg.Watch {
+	if cfg.Watch && !cfg.TUI {
 		slog.Info(fmt.Sprintf("Watch: polling every %s (Ctrl-C to stop)", cfg.WatchInterval))
 	}
-	if cfg.OutputFormat != "" {
+	if cfg.OutputFormat != "" && !cfg.TUI {
 		slog.Info(fmt.Sprintf("Format: %s", cfg.OutputFormat))
 	}
-	if cfg.ICloud {
+	if cfg.ICloud && !cfg.TUI {
 		slog.Info(fmt.Sprintf("iCloud: %s", cfg.ICloudPath))
 	}
-	if cfg.GDrive {
+	if cfg.GDrive && !cfg.TUI {
 		slog.Info(fmt.Sprintf("Google Drive: enabled (folder=%s, conflict=%s)", cfg.GDriveFolderID, cfg.GDriveConflict))
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// TUI mode: delegate to Bubble Tea and exit.
+	if cfg.TUI {
+		if err := runTUI(ctx, &cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	exp, err := NewExporter(ctx, &cfg)
 	if err != nil {
