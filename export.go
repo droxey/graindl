@@ -26,6 +26,10 @@ type Exporter struct {
 	storage      Storage
 	searchFilter map[string]bool // nil = export all, non-nil = only matched IDs
 	drive        *DriveUploader  // nil when --gdrive is not set
+
+	// TUI callbacks (nil when --tui is not set).
+	tuiSendTotal  func(int)
+	tuiSendResult func(string)
 }
 
 func NewExporter(ctx context.Context, cfg *Config) (*Exporter, error) {
@@ -132,6 +136,9 @@ func (e *Exporter) Run(ctx context.Context) error {
 
 	slog.Info("Exporting meetings", "count", len(meetings), "output", absPath(e.cfg.OutputDir))
 	e.manifest.Total = len(meetings)
+	if e.tuiSendTotal != nil {
+		e.tuiSendTotal(len(meetings))
+	}
 
 	if e.cfg.Parallel > 1 {
 		e.exportParallel(ctx, meetings)
@@ -191,6 +198,9 @@ func (e *Exporter) exportSequential(ctx context.Context, meetings []MeetingRef) 
 			e.manifest.OK++
 		default:
 			e.manifest.Errors++
+		}
+		if e.tuiSendResult != nil {
+			e.tuiSendResult(r.Status)
 		}
 		if i < len(meetings)-1 {
 			_ = e.throttle.Wait(ctx)
@@ -259,6 +269,9 @@ func (e *Exporter) exportParallel(ctx context.Context, meetings []MeetingRef) {
 		default:
 			e.manifest.Errors++
 		}
+		if e.tuiSendResult != nil {
+			e.tuiSendResult(ir.result.Status)
+		}
 	}
 
 	// Compact: remove nil slots left by meetings that were never dispatched
@@ -319,6 +332,9 @@ func (e *Exporter) runSingle(ctx context.Context) error {
 	}
 
 	e.manifest.Total = 1
+	if e.tuiSendTotal != nil {
+		e.tuiSendTotal(1)
+	}
 	slog.Info(fmt.Sprintf("[1/1] %s", coalesce(ref.Title, ref.ID)))
 	r := e.exportOne(ctx, ref)
 	e.manifest.Meetings = append(e.manifest.Meetings, r)
@@ -333,6 +349,9 @@ func (e *Exporter) runSingle(ctx context.Context) error {
 		e.manifest.OK++
 	default:
 		e.manifest.Errors++
+	}
+	if e.tuiSendResult != nil {
+		e.tuiSendResult(r.Status)
 	}
 
 	e.finalizeManifest(ctx)
