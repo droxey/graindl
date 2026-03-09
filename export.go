@@ -29,7 +29,8 @@ type Exporter struct {
 
 	// TUI callbacks (nil when --tui is not set).
 	tuiSendTotal  func(int)
-	tuiSendResult func(string)
+	tuiSendStart  func(int, string)
+	tuiSendResult func(int, string, string)
 }
 
 func NewExporter(ctx context.Context, cfg *Config) (*Exporter, error) {
@@ -186,6 +187,9 @@ func (e *Exporter) exportSequential(ctx context.Context, meetings []MeetingRef) 
 			break
 		}
 		slog.Info(fmt.Sprintf("[%d/%d] %s", i+1, len(meetings), coalesce(m.Title, m.ID)))
+		if e.tuiSendStart != nil {
+			e.tuiSendStart(i, coalesce(m.Title, m.ID))
+		}
 		r := e.exportOne(ctx, m)
 		e.manifest.Meetings = append(e.manifest.Meetings, r)
 		switch r.Status {
@@ -200,7 +204,7 @@ func (e *Exporter) exportSequential(ctx context.Context, meetings []MeetingRef) 
 			e.manifest.Errors++
 		}
 		if e.tuiSendResult != nil {
-			e.tuiSendResult(r.Status)
+			e.tuiSendResult(i, coalesce(m.Title, m.ID), r.Status)
 		}
 		if i < len(meetings)-1 {
 			_ = e.throttle.Wait(ctx)
@@ -246,6 +250,9 @@ func (e *Exporter) exportParallel(ctx context.Context, meetings []MeetingRef) {
 				defer func() { <-sem }() // release slot
 
 				slog.Info(fmt.Sprintf("[%d/%d] %s", idx+1, total, coalesce(ref.Title, ref.ID)))
+				if e.tuiSendStart != nil {
+					e.tuiSendStart(idx, coalesce(ref.Title, ref.ID))
+				}
 				r := e.exportOne(ctx, ref)
 				results <- indexedResult{index: idx, result: r}
 			}(i, m)
@@ -270,7 +277,7 @@ func (e *Exporter) exportParallel(ctx context.Context, meetings []MeetingRef) {
 			e.manifest.Errors++
 		}
 		if e.tuiSendResult != nil {
-			e.tuiSendResult(ir.result.Status)
+			e.tuiSendResult(ir.index, coalesce(ir.result.Title, ir.result.ID), ir.result.Status)
 		}
 	}
 
@@ -336,6 +343,9 @@ func (e *Exporter) runSingle(ctx context.Context) error {
 		e.tuiSendTotal(1)
 	}
 	slog.Info(fmt.Sprintf("[1/1] %s", coalesce(ref.Title, ref.ID)))
+	if e.tuiSendStart != nil {
+		e.tuiSendStart(0, coalesce(ref.Title, ref.ID))
+	}
 	r := e.exportOne(ctx, ref)
 	e.manifest.Meetings = append(e.manifest.Meetings, r)
 
@@ -351,7 +361,7 @@ func (e *Exporter) runSingle(ctx context.Context) error {
 		e.manifest.Errors++
 	}
 	if e.tuiSendResult != nil {
-		e.tuiSendResult(r.Status)
+		e.tuiSendResult(0, coalesce(r.Title, r.ID), r.Status)
 	}
 
 	e.finalizeManifest(ctx)

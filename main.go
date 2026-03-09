@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	xterm "github.com/charmbracelet/x/term"
 )
 
 var (
@@ -89,7 +91,15 @@ func main() {
 
 	var cfg Config
 	showVersion := false
+	noTUI := false
 	intervalStr := coalesce(envGet(dotenv, "GRAIN_WATCH_INTERVAL"), "30m")
+
+	// TUI default: on when stderr is a real TTY (auto-detect), unless explicitly
+	// overridden by the GRAIN_TUI env var or the --no-tui flag.
+	defaultTUI := xterm.IsTerminal(os.Stderr.Fd())
+	if envBool(dotenv, "GRAIN_TUI") {
+		defaultTUI = true
+	}
 
 	flag.StringVar(&cfg.OutputDir, "output", coalesce(envGet(dotenv, "GRAIN_OUTPUT_DIR"), "./recordings"), "Output directory")
 	flag.StringVar(&cfg.SessionDir, "session-dir", coalesce(envGet(dotenv, "GRAIN_SESSION_DIR"), "./.grain-session"), "Browser session dir")
@@ -111,7 +121,8 @@ func main() {
 	flag.StringVar(&cfg.OutputFormat, "output-format", envGet(dotenv, "GRAIN_OUTPUT_FORMAT"), "Export format: obsidian, notion (adds frontmatter markdown)")
 	flag.StringVar(&cfg.HealthcheckFile, "healthcheck-file", envGet(dotenv, "GRAIN_HEALTHCHECK_FILE"), "File to touch after each watch cycle (for monitoring)")
 	flag.StringVar(&cfg.LogFormat, "log-format", envGet(dotenv, "GRAIN_LOG_FORMAT"), "Log format: color (default), json")
-	flag.BoolVar(&cfg.TUI, "tui", envBool(dotenv, "GRAIN_TUI"), "Enable interactive terminal UI")
+	flag.BoolVar(&cfg.TUI, "tui", defaultTUI, "Enable interactive terminal UI (default: auto when stderr is a TTY)")
+	flag.BoolVar(&noTUI, "no-tui", false, "Disable interactive terminal UI")
 	flag.BoolVar(&cfg.ICloud, "icloud", envBool(dotenv, "GRAIN_ICLOUD"), "Copy exports to iCloud Drive")
 	flag.StringVar(&cfg.ICloudPath, "icloud-path", envGet(dotenv, "GRAIN_ICLOUD_PATH"), "Custom iCloud Drive path (auto-detected on macOS)")
 	flag.BoolVar(&cfg.GDrive, "gdrive", envBool(dotenv, "GRAIN_GDRIVE"), "Enable Google Drive upload after export")
@@ -124,6 +135,11 @@ func main() {
 	flag.BoolVar(&cfg.GDriveVerify, "gdrive-verify", envBool(dotenv, "GRAIN_GDRIVE_VERIFY"), "Force Drive-side verification before uploading")
 	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
 	flag.Parse()
+
+	// --no-tui overrides any auto-detection or explicit --tui.
+	if noTUI {
+		cfg.TUI = false
+	}
 
 	if showVersion {
 		fmt.Printf("graindl %s (%s)\n", version, commit)
